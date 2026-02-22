@@ -3,6 +3,7 @@
 #include <unistd.h>
 
 #include <opencv2/core/core.hpp>
+#include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgcodecs/imgcodecs.hpp>
 #include <opencv2/videoio/videoio.hpp>
 
@@ -28,6 +29,7 @@ static bool fetch_latest_frame(cv::VideoCapture &capture, cv::Mat &frame, int dr
 
 int main(int argc, char **argv) {
     printf("%s nbg [device_index] [output_path] [drain_grabs]\n", argv[0]);
+    printf("Press 'q' or ESC to quit.\n");
     if (argc < 2) {
         printf("Arguments count %d is incorrect!\n", argc);
         return -1;
@@ -57,6 +59,9 @@ int main(int argc, char **argv) {
     }
 
     capture.set(cv::CAP_PROP_BUFFERSIZE, 1);
+
+    const char *window_name = "yolov5_webcam";
+    cv::namedWindow(window_name, cv::WINDOW_AUTOSIZE);
 
     int frame_id = 0;
     while (1) {
@@ -92,13 +97,22 @@ int main(int argc, char **argv) {
 
         cv::Mat annotated = cv::imread("result.png", 1);
         if (!annotated.empty()) {
-            cv::imwrite(output_path, annotated);
+            cv::imshow(window_name, annotated);
+            if (output_path[0] != '\0') {
+                cv::imwrite(output_path, annotated);
+            }
         }
 
         free(input_data);
         ++frame_id;
+
+        int key = cv::waitKey(1);
+        if (key == 27 || key == 'q' || key == 'Q') {
+            break;
+        }
     }
 
+    cv::destroyWindow(window_name);
     capture.release();
     awnn_destroy(context);
     awnn_uninit();
