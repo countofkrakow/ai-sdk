@@ -5,6 +5,7 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
+#include <opencv2/highgui.hpp>
 #include <opencv2/videoio.hpp>
 
 #include <awnn_lib.h>
@@ -49,6 +50,7 @@ int main(int argc, char **argv) {
     printf("Running live detection from %s\n", camera_device);
     printf("Enforcing input shape CxHxW = %dx%dx%d\n", input_channels, input_height, input_width);
     printf("Annotated detections will be written to result.png\n");
+    printf("Displaying live detections in OpenCV window (press q to quit)\n");
 
     int printed_resolution = 0;
 
@@ -103,13 +105,25 @@ int main(int argc, char **argv) {
         float **results = awnn_get_output_buffers(context);
         yolov5_post_process(frame_file, results);
 
+        cv::Mat detection = cv::imread("result.png");
+        if (!detection.empty()) {
+            cv::imshow("YOLOv5 Live Detection", detection);
+        }
+
         free(plant_data);
+
+        int key = cv::waitKey(1);
+        if (key == 'q' || key == 'Q' || key == 27) {
+            break;
+        }
+
         usleep(30000);
     }
 
     awnn_destroy(context);
     awnn_uninit();
     camera.release();
+    cv::destroyAllWindows();
 
     return 0;
 }
