@@ -24,7 +24,7 @@ else
   MYCFLAGS += -DNPU_SW_VERSION=1
 endif
 
-OPENCL_LIBS += -Wl,--no-as-needed -lOpenCL -Wl,--as-needed
+OPENCL_LIBS += -Wl,--no-as-needed -L/usr/lib/aarch64-linux-gnu -lavutil -lOpenCL -Wl,--as-needed
 
 $(TARGET): $(SRCS)
 	$(CXX) $(CFLAGS) -g -o $@ $^ $(INCLUDE) $(LIBS) $(LIBS_VIP) $(OPENCL_LIBS) -lm
