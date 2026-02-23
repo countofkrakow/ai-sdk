@@ -345,8 +345,6 @@ int main(int argc, char **argv) {
     const unsigned int tilt_pwm_channel = (argc >= 7) ? (unsigned int)atoi(argv[6]) : 5;
 
     const int input_channels = 3;
-    const int input_height = 480;
-    const int input_width = 640;
     const float control_dt_sec = 0.03f;
 
     srand((unsigned int)time(NULL));
@@ -356,9 +354,6 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Failed to open webcam device: %s\n", camera_device);
         return -1;
     }
-
-    camera.set(cv::CAP_PROP_FRAME_WIDTH, input_width);
-    camera.set(cv::CAP_PROP_FRAME_HEIGHT, input_height);
 
     awnn_init();
     Awnn_Context_t *context = awnn_create(nbg);
@@ -370,7 +365,7 @@ int main(int argc, char **argv) {
     }
 
     printf("Running live detection from %s\n", camera_device);
-    printf("Enforcing input shape CxHxW = %dx%dx%d\n", input_channels, input_height, input_width);
+    printf("Using native camera resolution; YOLO pre-process handles letterbox scaling\n");
     printf("Annotated detections will be written to result.png\n");
     printf("Displaying live detections in OpenCV window (press q to quit)\n");
     printf("PWM servo output pan=pwmchip%u:%u tilt=pwmchip%u:%u\n",
@@ -433,7 +428,7 @@ int main(int argc, char **argv) {
     ServoState servo_state = {0.0f, 0.0f};
     struct RandomScanState random_scan = {0.0f, 0.0f, RANDOM_MIN_SPEED_DEG_PER_SEC, 0};
     retarget_random_scan(&random_scan);
-    cv::Point2f estimated_laser((float)input_width * 0.5f, (float)input_height * 0.5f);
+    cv::Point2f estimated_laser(0.0f, 0.0f);
     int frame_index = 0;
 
     while (1) {
@@ -447,6 +442,7 @@ int main(int argc, char **argv) {
         if (!printed_resolution) {
             printf("Webcam frame resolution: %dx%d\n", raw_frame.cols, raw_frame.rows);
             printed_resolution = 1;
+            estimated_laser = cv::Point2f((float)raw_frame.cols * 0.5f, (float)raw_frame.rows * 0.5f);
         }
 
         cv::Mat frame = raw_frame;
@@ -454,10 +450,6 @@ int main(int argc, char **argv) {
             cv::cvtColor(frame, frame, cv::COLOR_BGRA2BGR);
         } else if (frame.channels() == 1) {
             cv::cvtColor(frame, frame, cv::COLOR_GRAY2BGR);
-        }
-
-        if (frame.cols != input_width || frame.rows != input_height) {
-            cv::resize(frame, frame, cv::Size(input_width, input_height));
         }
 
         if (frame.channels() != input_channels) {
