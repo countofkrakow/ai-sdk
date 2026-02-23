@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <math.h>
+#include <time.h>
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -37,8 +38,63 @@ struct LaserDotObservation {
     float area;
 };
 
+struct RandomScanState {
+    float target_pan_deg;
+    float target_tilt_deg;
+    float speed_deg_per_sec;
+    int frames_until_retarget;
+};
+
+// Keep these configurable limits for random "hunt" motion when no cat is detected.
+static const float RANDOM_MIN_SPEED_DEG_PER_SEC = 8.0f;
+static const float RANDOM_MAX_SPEED_DEG_PER_SEC = 30.0f;
+
 static float clampf(float value, float min_v, float max_v) {
     return (value < min_v) ? min_v : ((value > max_v) ? max_v : value);
+}
+
+static float random_float_range(float min_v, float max_v) {
+    const float r = (float)rand() / (float)RAND_MAX;
+    return min_v + (max_v - min_v) * r;
+}
+
+static void retarget_random_scan(struct RandomScanState *scan_state) {
+    scan_state->target_pan_deg = random_float_range(-45.0f, 45.0f);
+    scan_state->target_tilt_deg = random_float_range(-30.0f, 30.0f);
+    scan_state->speed_deg_per_sec = random_float_range(
+        RANDOM_MIN_SPEED_DEG_PER_SEC,
+        RANDOM_MAX_SPEED_DEG_PER_SEC);
+    scan_state->frames_until_retarget = 25 + (rand() % 70);
+}
+
+static void update_random_scan_servo(
+    ServoState *servo_state,
+    struct RandomScanState *scan_state,
+    float dt_sec) {
+    if (scan_state->frames_until_retarget <= 0) {
+        retarget_random_scan(scan_state);
+    }
+
+    float dx = scan_state->target_pan_deg - servo_state->pan_deg;
+    float dy = scan_state->target_tilt_deg - servo_state->tilt_deg;
+    float distance = sqrtf(dx * dx + dy * dy);
+    const float max_step = scan_state->speed_deg_per_sec * dt_sec;
+
+    if (distance < 0.8f) {
+        retarget_random_scan(scan_state);
+    } else if (distance <= max_step || max_step <= 0.001f) {
+        servo_state->pan_deg = scan_state->target_pan_deg;
+        servo_state->tilt_deg = scan_state->target_tilt_deg;
+        scan_state->frames_until_retarget--;
+    } else {
+        const float scale = max_step / distance;
+        servo_state->pan_deg += dx * scale;
+        servo_state->tilt_deg += dy * scale;
+        scan_state->frames_until_retarget--;
+    }
+
+    servo_state->pan_deg = clampf(servo_state->pan_deg, -45.0f, 45.0f);
+    servo_state->tilt_deg = clampf(servo_state->tilt_deg, -45.0f, 45.0f);
 }
 
 static int servo_pwm_open(struct ServoPwm *servo_pwm, unsigned int chip, unsigned int channel) {
@@ -221,6 +277,9 @@ int main(int argc, char **argv) {
     const int input_channels = 3;
     const int input_height = 480;
     const int input_width = 640;
+    const float control_dt_sec = 0.03f;
+
+    srand((unsigned int)time(NULL));
 
     cv::VideoCapture camera(camera_device, cv::CAP_V4L2);
     if (!camera.isOpened()) {
@@ -275,6 +334,8 @@ int main(int argc, char **argv) {
 
     int printed_resolution = 0;
     ServoState servo_state = {0.0f, 0.0f};
+    struct RandomScanState random_scan = {0.0f, 0.0f, RANDOM_MIN_SPEED_DEG_PER_SEC, 0};
+    retarget_random_scan(&random_scan);
     cv::Point2f estimated_laser((float)input_width * 0.5f, (float)input_height * 0.5f);
     int frame_index = 0;
 
@@ -351,9 +412,15 @@ int main(int argc, char **argv) {
                     servo_state.pan_deg,
                     servo_state.tilt_deg);
         } else {
-            fprintf(stderr, "No cat detection; holding servo pan=%.2f tilt=%.2f\n",
+            update_random_scan_servo(&servo_state, &random_scan, control_dt_sec);
+            servo_pwm_set_angle(&pan_pwm, servo_state.pan_deg);
+            servo_pwm_set_angle(&tilt_pwm, servo_state.tilt_deg);
+            fprintf(stderr, "No cat detection; random scan pan=%.2f tilt=%.2f speed=%.2f target=(%.2f,%.2f)\n",
                     servo_state.pan_deg,
-                    servo_state.tilt_deg);
+                    servo_state.tilt_deg,
+                    random_scan.speed_deg_per_sec,
+                    random_scan.target_pan_deg,
+                    random_scan.target_tilt_deg);
         }
 
         cv::Mat detection = cv::imread("result.png");
