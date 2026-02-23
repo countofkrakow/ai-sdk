@@ -26,7 +26,7 @@ endif
 
 
 $(TARGET): $(SRCS)
-	$(CXX) $(CFLAGS) -g -o $@ $^ $(INCLUDE) $(LIBS) $(LIBS_VIP) -Wl,--no-as-needed -lOpenCL -Wl,--as-needed -lm
+	$(CXX) $(CFLAGS) -g -o $@ $^ $(INCLUDE) $(LIBS) $(LIBS_VIP) -Wl,--no-as-needed -lOpenCL -Wl,--as-needed -lm -pthread
 
 all:$(TARGET) install
 

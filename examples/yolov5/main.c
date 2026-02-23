@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include <math.h>
 #include <time.h>
+#include <pthread.h>
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -43,6 +44,23 @@ struct RandomScanState {
     float target_tilt_deg;
     float speed_deg_per_sec;
     int frames_until_retarget;
+};
+
+struct InferenceShared {
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    cv::Mat latest_frame;
+    int has_new_frame;
+    int stop;
+    int inference_running;
+    int has_cat_info;
+    Yolov5CatTrackInfo latest_track;
+};
+
+struct InferenceThreadArgs {
+    Awnn_Context_t *context;
+    const char *frame_file;
+    struct InferenceShared *shared;
 };
 
 // Keep these configurable limits for random "hunt" motion when no cat is detected.
@@ -95,6 +113,58 @@ static void update_random_scan_servo(
 
     servo_state->pan_deg = clampf(servo_state->pan_deg, -45.0f, 45.0f);
     servo_state->tilt_deg = clampf(servo_state->tilt_deg, -45.0f, 45.0f);
+}
+
+static void *inference_thread_main(void *arg) {
+    struct InferenceThreadArgs *args = (struct InferenceThreadArgs *)arg;
+
+    while (1) {
+        cv::Mat frame;
+
+        pthread_mutex_lock(&args->shared->mutex);
+        while (!args->shared->has_new_frame && !args->shared->stop) {
+            pthread_cond_wait(&args->shared->cond, &args->shared->mutex);
+        }
+
+        if (args->shared->stop) {
+            pthread_mutex_unlock(&args->shared->mutex);
+            break;
+        }
+
+        frame = args->shared->latest_frame.clone();
+        args->shared->has_new_frame = 0;
+        args->shared->inference_running = 1;
+        pthread_mutex_unlock(&args->shared->mutex);
+
+        Yolov5CatTrackInfo track_info;
+        track_info.has_cat = 0;
+        track_info.confidence = 0.0f;
+        track_info.x = 0.0f;
+        track_info.y = 0.0f;
+        track_info.width = 0.0f;
+        track_info.height = 0.0f;
+
+        if (!frame.empty() && cv::imwrite(args->frame_file, frame)) {
+            unsigned int file_size = 0;
+            unsigned char *plant_data = yolov5_pre_process(args->frame_file, &file_size);
+            if (plant_data != NULL) {
+                void *input_buffers[] = {plant_data};
+                awnn_set_input_buffers(args->context, input_buffers);
+                awnn_run(args->context);
+                float **results = awnn_get_output_buffers(args->context);
+                yolov5_post_process(args->frame_file, results, &track_info);
+                free(plant_data);
+            }
+        }
+
+        pthread_mutex_lock(&args->shared->mutex);
+        args->shared->latest_track = track_info;
+        args->shared->has_cat_info = 1;
+        args->shared->inference_running = 0;
+        pthread_mutex_unlock(&args->shared->mutex);
+    }
+
+    return NULL;
 }
 
 static int servo_pwm_open(struct ServoPwm *servo_pwm, unsigned int chip, unsigned int channel) {
@@ -265,7 +335,7 @@ int main(int argc, char **argv) {
 
     const char *nbg = argv[1];
     const char *camera_device = (argc >= 3) ? argv[2] : "/dev/video0";
-    const char *frame_file = "live_frame.jpg";
+    const char *inference_frame_file = "live_frame.jpg";
 
     // Defaults for two PWM-capable header pins from Radxa Cubie A7Z pinmux docs.
     // Override from argv when your board maps PWM differently.
@@ -332,6 +402,33 @@ int main(int argc, char **argv) {
         return -1;
     }
 
+    struct InferenceShared inference_shared;
+    pthread_mutex_init(&inference_shared.mutex, NULL);
+    pthread_cond_init(&inference_shared.cond, NULL);
+    inference_shared.has_new_frame = 0;
+    inference_shared.stop = 0;
+    inference_shared.inference_running = 0;
+    inference_shared.has_cat_info = 0;
+    inference_shared.latest_track.has_cat = 0;
+
+    struct InferenceThreadArgs worker_args;
+    worker_args.context = context;
+    worker_args.frame_file = inference_frame_file;
+    worker_args.shared = &inference_shared;
+
+    pthread_t inference_thread;
+    if (pthread_create(&inference_thread, NULL, inference_thread_main, &worker_args) != 0) {
+        fprintf(stderr, "Failed to create inference thread\n");
+        servo_pwm_close(&pan_pwm);
+        servo_pwm_close(&tilt_pwm);
+        awnn_destroy(context);
+        awnn_uninit();
+        camera.release();
+        pthread_mutex_destroy(&inference_shared.mutex);
+        pthread_cond_destroy(&inference_shared.cond);
+        return -1;
+    }
+
     int printed_resolution = 0;
     ServoState servo_state = {0.0f, 0.0f};
     struct RandomScanState random_scan = {0.0f, 0.0f, RANDOM_MIN_SPEED_DEG_PER_SEC, 0};
@@ -369,34 +466,22 @@ int main(int argc, char **argv) {
             continue;
         }
 
-        if (!cv::imwrite(frame_file, frame)) {
-            fprintf(stderr, "Failed to write frame image: %s\n", frame_file);
-            usleep(100000);
-            continue;
-        }
-
-        unsigned int file_size = 0;
-        unsigned char *plant_data = yolov5_pre_process(frame_file, &file_size);
-        if (plant_data == NULL) {
-            fprintf(stderr, "Pre-process failed for frame: %s\n", frame_file);
-            usleep(100000);
-            continue;
-        }
-
-        void *input_buffers[] = {plant_data};
-        awnn_set_input_buffers(context, input_buffers);
-        awnn_run(context);
-
-        float **results = awnn_get_output_buffers(context);
-        Yolov5CatTrackInfo track_info;
-        yolov5_post_process(frame_file, results, &track_info);
-
         LaserDotObservation laser_obs = detect_laser_dot(frame);
         if (laser_obs.detected) {
             estimated_laser = laser_obs.center;
         }
 
-        if (track_info.has_cat) {
+        pthread_mutex_lock(&inference_shared.mutex);
+        inference_shared.latest_frame = frame.clone();
+        inference_shared.has_new_frame = 1;
+        pthread_cond_signal(&inference_shared.cond);
+
+        Yolov5CatTrackInfo track_info = inference_shared.latest_track;
+        int has_track_info = inference_shared.has_cat_info;
+        int inference_running = inference_shared.inference_running;
+        pthread_mutex_unlock(&inference_shared.mutex);
+
+        if (has_track_info && track_info.has_cat) {
             cv::Point2f circle_target = build_circle_target(track_info, frame_index);
             update_servo_state(&servo_state, estimated_laser, circle_target, frame.cols, frame.rows);
             servo_pwm_set_angle(&pan_pwm, servo_state.pan_deg);
@@ -415,7 +500,8 @@ int main(int argc, char **argv) {
             update_random_scan_servo(&servo_state, &random_scan, control_dt_sec);
             servo_pwm_set_angle(&pan_pwm, servo_state.pan_deg);
             servo_pwm_set_angle(&tilt_pwm, servo_state.tilt_deg);
-            fprintf(stderr, "No cat detection; random scan pan=%.2f tilt=%.2f speed=%.2f target=(%.2f,%.2f)\n",
+            fprintf(stderr, "No cat detection%s; random scan pan=%.2f tilt=%.2f speed=%.2f target=(%.2f,%.2f)\n",
+                    inference_running ? " (inference busy)" : "",
                     servo_state.pan_deg,
                     servo_state.tilt_deg,
                     random_scan.speed_deg_per_sec,
@@ -428,7 +514,6 @@ int main(int argc, char **argv) {
             cv::imshow("YOLOv5 Live Detection", detection);
         }
 
-        free(plant_data);
         frame_index++;
 
         int key = cv::waitKey(1);
@@ -438,6 +523,14 @@ int main(int argc, char **argv) {
 
         usleep(30000);
     }
+
+    pthread_mutex_lock(&inference_shared.mutex);
+    inference_shared.stop = 1;
+    pthread_cond_signal(&inference_shared.cond);
+    pthread_mutex_unlock(&inference_shared.mutex);
+    pthread_join(inference_thread, NULL);
+    pthread_mutex_destroy(&inference_shared.mutex);
+    pthread_cond_destroy(&inference_shared.cond);
 
     awnn_destroy(context);
     awnn_uninit();
