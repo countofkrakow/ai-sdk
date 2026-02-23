@@ -370,9 +370,19 @@ static void draw_objects(const cv::Mat& bgr, const std::vector<Object>& objects)
 
 
 extern "C"{
-int yolov5_post_process(const char *imagepath, float **output)
+int yolov5_post_process(const char *imagepath, float **output, Yolov5CatTrackInfo *track_info)
 {
     printf("yolov5_postprocess.cpp run. \n");
+
+    if (track_info != NULL)
+    {
+        track_info->has_cat = 0;
+        track_info->confidence = 0.0f;
+        track_info->x = 0.0f;
+        track_info->y = 0.0f;
+        track_info->width = 0.0f;
+        track_info->height = 0.0f;
+    }
 
     cv::Mat m = cv::imread(imagepath, 1);
     if (m.empty())
@@ -383,6 +393,27 @@ int yolov5_post_process(const char *imagepath, float **output)
 
     std::vector<Object> objects;
     detect_yolov5(m, objects, output);
+
+    if (track_info != NULL)
+    {
+        const int cat_class_index = 15;
+        for (size_t i = 0; i < objects.size(); ++i)
+        {
+            const Object &obj = objects[i];
+            if (obj.label != cat_class_index)
+                continue;
+
+            if (!track_info->has_cat || obj.prob > track_info->confidence)
+            {
+                track_info->has_cat = 1;
+                track_info->confidence = obj.prob;
+                track_info->x = obj.rect.x;
+                track_info->y = obj.rect.y;
+                track_info->width = obj.rect.width;
+                track_info->height = obj.rect.height;
+            }
+        }
+    }
 
     draw_objects(m, objects);
 
