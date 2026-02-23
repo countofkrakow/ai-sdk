@@ -337,12 +337,13 @@ int main(int argc, char **argv) {
     const char *camera_device = (argc >= 3) ? argv[2] : "/dev/video0";
     const char *inference_frame_file = "live_frame.jpg";
 
-    // Fixed hardware mapping for Radxa Cubie A7Z (best-guess from pin docs):
-    // use two PWM-capable outputs on pwmchip0 channels 3 and 5.
+    // Fixed hardware mapping for Radxa Cubie A7Z from 40-pin header table:
+    //   pan  -> pin 36 (PB4 / PWM0-0) => pwmchip0 channel 0
+    //   tilt -> pin 12 (PB5 / PWM0-1) => pwmchip0 channel 1
     const unsigned int pan_pwm_chip = 0;
-    const unsigned int pan_pwm_channel = 3;
+    const unsigned int pan_pwm_channel = 0;
     const unsigned int tilt_pwm_chip = 0;
-    const unsigned int tilt_pwm_channel = 5;
+    const unsigned int tilt_pwm_channel = 1;
 
     const int input_channels = 3;
     const float control_dt_sec = 0.03f;
