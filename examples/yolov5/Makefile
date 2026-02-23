@@ -5,8 +5,8 @@ include ../../machinfo/$(AI_SDK_PLATFORM)/config.mk
 endif
 
 INCLUDE += -I$(INSTALL_PREFIX)/usr/include -I$(STAGING_DIR)/usr/include/opencv4 -I../libawnn_viplite -I../libawutils -I../../
-LIBS    += -L $(INSTALL_PREFIX)/usr/lib -Wl,-rpath-link,$(INSTALL_PREFIX)/usr/lib -lopencv_core -lopencv_imgcodecs -lopencv_imgproc -ljpeg
-SRCS    += main.c yolov5_post_process.cpp yolov5_pre_process.cpp ../libawnn_viplite/awnn_lib.c ../libawnn_viplite/awnn_quantize.c ../libawutils/image_utils.c
+LIBS    += -L $(INSTALL_PREFIX)/usr/lib -Wl,-rpath-link,$(INSTALL_PREFIX)/usr/lib -lopencv_core -lopencv_imgcodecs -lopencv_imgproc -lopencv_highgui -lopencv_videoio -ljpeg
+SRCS    += main.cpp yolov5_post_process.cpp yolov5_pre_process.cpp ../libawnn_viplite/awnn_lib.c ../libawnn_viplite/awnn_quantize.c ../libawutils/image_utils.c
 
 CFLAGS += -g -O0 -DDEBUG -D_DEBUG
 
@@ -17,16 +17,19 @@ endif
 ifeq ("$(NPU_SW_VERSION)", "v2.0")
   INCLUDE += -I../../viplite-tina/lib/aarch64-none-linux-gnu/v2.0/inc
   LIBS_VIP += -L../../viplite-tina/lib/aarch64-none-linux-gnu/v2.0/ -lNBGlinker -lVIPhal
+  RPATH_VIP += -Wl,-rpath,\$$ORIGIN/../../viplite-tina/lib/aarch64-none-linux-gnu/v2.0
   MYCFLAGS += -DNPU_SW_VERSION=2
 else
   INCLUDE += -I../../viplite-tina/lib/aarch64-none-linux-gnu/v1.13/inc
   LIBS_VIP += -L../../viplite-tina/lib/aarch64-none-linux-gnu/v1.13/ -lVIPlite -lVIPuser
+  RPATH_VIP += -Wl,-rpath,\$$ORIGIN/../../viplite-tina/lib/aarch64-none-linux-gnu/v1.13
   MYCFLAGS += -DNPU_SW_VERSION=1
 endif
 
+OPENCL_LIBS += -Wl,--no-as-needed -lOpenCL -Wl,--as-needed
 
 $(TARGET): $(SRCS)
-	$(CXX) $(CFLAGS) -g -o $@ $^ $(INCLUDE) $(LIBS) $(LIBS_VIP) -lm
+	$(CXX) $(CFLAGS) -g -o $@ $^ $(INCLUDE) $(LIBS) $(LIBS_VIP) $(RPATH_VIP) $(OPENCL_LIBS) -lm
 
 all:$(TARGET) install
 
@@ -42,4 +45,3 @@ install: $(TARGET)
 
 clean:
 	rm -rf $(TARGET) *.o *~
-
