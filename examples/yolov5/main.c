@@ -214,9 +214,9 @@ int main(int argc, char **argv) {
     // Defaults for two PWM-capable header pins from Radxa Cubie A7Z pinmux docs.
     // Override from argv when your board maps PWM differently.
     const unsigned int pan_pwm_chip = (argc >= 4) ? (unsigned int)atoi(argv[3]) : 0;
-    const unsigned int pan_pwm_channel = (argc >= 5) ? (unsigned int)atoi(argv[4]) : 0;
+    const unsigned int pan_pwm_channel = (argc >= 5) ? (unsigned int)atoi(argv[4]) : 3;
     const unsigned int tilt_pwm_chip = (argc >= 6) ? (unsigned int)atoi(argv[5]) : 0;
-    const unsigned int tilt_pwm_channel = (argc >= 7) ? (unsigned int)atoi(argv[6]) : 1;
+    const unsigned int tilt_pwm_channel = (argc >= 7) ? (unsigned int)atoi(argv[6]) : 5;
 
     const int input_channels = 3;
     const int input_height = 480;
