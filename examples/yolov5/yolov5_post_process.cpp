@@ -125,8 +125,8 @@ static void nms_sorted_bboxes(const std::vector<Object>& faceobjects, std::vecto
     }
 }
 
-static void generate_proposals(int stride, const float* feat, float prob_threshold, std::vector<Object>& objects,
-                               int letterbox_cols, int letterbox_rows)
+static void generate_proposals(int stride, const float* feat, float default_prob_threshold, float cat_prob_threshold,
+                               std::vector<Object>& objects, int letterbox_cols, int letterbox_rows)
 {
     static float anchors[18] = {10, 13, 16, 30, 33, 23, 30, 61, 62, 45, 59, 119, 116, 90, 156, 198, 373, 326};
 
@@ -141,9 +141,6 @@ static void generate_proposals(int stride, const float* feat, float prob_thresho
         anchor_group = 2;
     if (stride == 32)
         anchor_group = 3;
-
-    float deprob_threshold = desigmoid(prob_threshold);
-    //cout << "deprob_threshold: " << deprob_threshold << endl;
 
     int feat_size = feat_w * feat_h;
     int feat_size_cls_5 = feat_size * (cls_num + 5);
@@ -179,13 +176,20 @@ static void generate_proposals(int stride, const float* feat, float prob_thresho
 //                float box_score = feat[a_idx + 4];
                 float box_score = *feat_ptr;
 
+                const int cat_class_index = 15; // COCO class index for "cat"
+                float class_prob_threshold = default_prob_threshold;
+                if (class_index == cat_class_index)
+                    class_prob_threshold = cat_prob_threshold;
+
+                float deprob_threshold = desigmoid(class_prob_threshold);
+
                 /* sigmoid -> (0,1), sigmoid(x1)*sigmoid(x2) < sigmoid(x1) or sigmoid(x2), 20220826 penng */
 //                float final_score = sigmoid(box_score) * sigmoid(class_score);
                 float final_score = 0.0f;
                 if (box_score >= deprob_threshold && class_score >= deprob_threshold)
                 	final_score = sigmoid(box_score) * sigmoid(class_score);
 
-                if (final_score >= prob_threshold)
+                if (final_score >= class_prob_threshold)
                 {
 //                    int loc_idx = a * feat_h * feat_w * (cls_num + 5) + h * feat_w * (cls_num + 5) + w * (cls_num + 5);
                     int loc_idx = a_idx;
@@ -237,7 +241,8 @@ static int detect_yolov5(const cv::Mat& bgr, std::vector<Object>& objects, float
     int letterbox_cols = 640;
 
     /* postprocess */
-    const float prob_threshold = 0.4f;
+    const float default_prob_threshold = 0.4f;
+    const float cat_prob_threshold = 0.25f; // lower confidence threshold for cat class
     const float nms_threshold = 0.45f;
 
     std::vector<Object> proposals;
@@ -246,11 +251,11 @@ static int detect_yolov5(const cv::Mat& bgr, std::vector<Object>& objects, float
     std::vector<Object> objects32;
     //std::vector<Object> objects;
 
-    generate_proposals(32, p32_data.data(), prob_threshold, objects32, letterbox_cols, letterbox_rows);
+    generate_proposals(32, p32_data.data(), default_prob_threshold, cat_prob_threshold, objects32, letterbox_cols, letterbox_rows);
     proposals.insert(proposals.end(), objects32.begin(), objects32.end());
-    generate_proposals(16, p16_data.data(), prob_threshold, objects16, letterbox_cols, letterbox_rows);
+    generate_proposals(16, p16_data.data(), default_prob_threshold, cat_prob_threshold, objects16, letterbox_cols, letterbox_rows);
     proposals.insert(proposals.end(), objects16.begin(), objects16.end());
-    generate_proposals(8, p8_data.data(), prob_threshold, objects8, letterbox_cols, letterbox_rows);
+    generate_proposals(8, p8_data.data(), default_prob_threshold, cat_prob_threshold, objects8, letterbox_cols, letterbox_rows);
     proposals.insert(proposals.end(), objects8.begin(), objects8.end());
 
     qsort_descent_inplace(proposals);
