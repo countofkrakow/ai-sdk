@@ -327,7 +327,7 @@ static void update_servo_state(
 }
 
 int main(int argc, char **argv) {
-    printf("%s nbg [camera_device] [pan_pwm_chip] [pan_pwm_channel] [tilt_pwm_chip] [tilt_pwm_channel]\n", argv[0]);
+    printf("%s nbg [camera_device]\n", argv[0]);
     if (argc < 2) {
         printf("Arguments count %d is incorrect!\n", argc);
         return -1;
@@ -337,12 +337,12 @@ int main(int argc, char **argv) {
     const char *camera_device = (argc >= 3) ? argv[2] : "/dev/video0";
     const char *inference_frame_file = "live_frame.jpg";
 
-    // Defaults for two PWM-capable header pins from Radxa Cubie A7Z pinmux docs.
-    // Override from argv when your board maps PWM differently.
-    const unsigned int pan_pwm_chip = (argc >= 4) ? (unsigned int)atoi(argv[3]) : 0;
-    const unsigned int pan_pwm_channel = (argc >= 5) ? (unsigned int)atoi(argv[4]) : 3;
-    const unsigned int tilt_pwm_chip = (argc >= 6) ? (unsigned int)atoi(argv[5]) : 0;
-    const unsigned int tilt_pwm_channel = (argc >= 7) ? (unsigned int)atoi(argv[6]) : 5;
+    // Fixed hardware mapping for Radxa Cubie A7Z (best-guess from pin docs):
+    // use two PWM-capable outputs on pwmchip0 channels 3 and 5.
+    const unsigned int pan_pwm_chip = 0;
+    const unsigned int pan_pwm_channel = 3;
+    const unsigned int tilt_pwm_chip = 0;
+    const unsigned int tilt_pwm_channel = 5;
 
     const int input_channels = 3;
     const float control_dt_sec = 0.03f;
