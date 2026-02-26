@@ -12,8 +12,10 @@
 #include <opencv2/videoio.hpp>
 #if __has_include(<periphery/pwm.h>)
 #include <periphery/pwm.h>
+#include <periphery/gpio.h>
 #else
 #include <pwm.h>
+#include <gpio.h>
 #endif
 
 #include <awnn_lib.h>
@@ -31,6 +33,12 @@ struct ServoPwm {
     pwm_t *handle;
     unsigned int chip;
     unsigned int channel;
+};
+
+struct MosfetPowerGpio {
+    gpio_t *handle;
+    const char *chip_path;
+    unsigned int line;
 };
 
 struct LaserDotObservation {
@@ -227,6 +235,50 @@ static int servo_pwm_enable(struct ServoPwm *servo_pwm) {
     return 0;
 }
 
+static int mosfet_gpio_open(struct MosfetPowerGpio *mosfet_gpio, const char *chip_path, unsigned int line) {
+    mosfet_gpio->handle = gpio_new();
+    if (mosfet_gpio->handle == NULL) {
+        fprintf(stderr, "gpio_new failed for %s line=%u\n", chip_path, line);
+        return -1;
+    }
+
+    mosfet_gpio->chip_path = chip_path;
+    mosfet_gpio->line = line;
+
+    if (gpio_open(mosfet_gpio->handle, chip_path, line, GPIO_DIR_OUT_LOW) < 0) {
+        fprintf(stderr, "gpio_open failed for %s line=%u\n", chip_path, line);
+        gpio_free(mosfet_gpio->handle);
+        mosfet_gpio->handle = NULL;
+        return -1;
+    }
+
+    return 0;
+}
+
+static int mosfet_gpio_set(struct MosfetPowerGpio *mosfet_gpio, bool enabled) {
+    if (mosfet_gpio->handle == NULL) {
+        return -1;
+    }
+
+    if (gpio_write(mosfet_gpio->handle, enabled) < 0) {
+        fprintf(stderr, "gpio_write failed for %s line=%u\n", mosfet_gpio->chip_path, mosfet_gpio->line);
+        return -1;
+    }
+
+    return 0;
+}
+
+static void mosfet_gpio_close(struct MosfetPowerGpio *mosfet_gpio) {
+    if (mosfet_gpio->handle == NULL) {
+        return;
+    }
+
+    gpio_write(mosfet_gpio->handle, false);
+    gpio_close(mosfet_gpio->handle);
+    gpio_free(mosfet_gpio->handle);
+    mosfet_gpio->handle = NULL;
+}
+
 static void servo_pwm_close(struct ServoPwm *servo_pwm) {
     if (servo_pwm->handle == NULL) {
         return;
@@ -345,6 +397,13 @@ int main(int argc, char **argv) {
     const unsigned int tilt_pwm_chip = 1;
     const unsigned int tilt_pwm_channel = 4;
 
+    // MOSFET power control lines (A7Z header GPIOs):
+    //   pan  power -> pin 7  (PB0)  => gpiochip0 line 32
+    //   tilt power -> pin 11 (PB1)  => gpiochip0 line 33
+    const char *mosfet_gpiochip_path = "/dev/gpiochip0";
+    const unsigned int pan_power_gpio_line = 32;
+    const unsigned int tilt_power_gpio_line = 33;
+
     const int input_channels = 3;
     const float control_dt_sec = 0.03f;
 
@@ -371,6 +430,32 @@ int main(int argc, char **argv) {
     printf("Displaying live detections in OpenCV window (press q to quit)\n");
     printf("PWM servo output pan=pwmchip%u:%u tilt=pwmchip%u:%u\n",
            pan_pwm_chip, pan_pwm_channel, tilt_pwm_chip, tilt_pwm_channel);
+    printf("Servo MOSFET power control pan=%s:%u tilt=%s:%u\n",
+           mosfet_gpiochip_path, pan_power_gpio_line, mosfet_gpiochip_path, tilt_power_gpio_line);
+
+    struct MosfetPowerGpio pan_power_gpio = {0};
+    struct MosfetPowerGpio tilt_power_gpio = {0};
+    if (mosfet_gpio_open(&pan_power_gpio, mosfet_gpiochip_path, pan_power_gpio_line) < 0 ||
+        mosfet_gpio_open(&tilt_power_gpio, mosfet_gpiochip_path, tilt_power_gpio_line) < 0) {
+        fprintf(stderr, "Failed to open MOSFET power GPIO outputs. Check gpiochip path/line and pinmux.\n");
+        if (pan_power_gpio.handle) mosfet_gpio_close(&pan_power_gpio);
+        if (tilt_power_gpio.handle) mosfet_gpio_close(&tilt_power_gpio);
+        awnn_destroy(context);
+        awnn_uninit();
+        camera.release();
+        return -1;
+    }
+
+    if (mosfet_gpio_set(&pan_power_gpio, true) < 0 ||
+        mosfet_gpio_set(&tilt_power_gpio, true) < 0) {
+        fprintf(stderr, "Failed to enable MOSFET servo power rails\n");
+        mosfet_gpio_close(&pan_power_gpio);
+        mosfet_gpio_close(&tilt_power_gpio);
+        awnn_destroy(context);
+        awnn_uninit();
+        camera.release();
+        return -1;
+    }
 
     struct ServoPwm pan_pwm = {0};
     struct ServoPwm tilt_pwm = {0};
@@ -390,6 +475,8 @@ int main(int argc, char **argv) {
         servo_pwm_enable(&pan_pwm) < 0 ||
         servo_pwm_enable(&tilt_pwm) < 0) {
         fprintf(stderr, "Failed to initialize servo PWM state\n");
+        mosfet_gpio_close(&pan_power_gpio);
+        mosfet_gpio_close(&tilt_power_gpio);
         servo_pwm_close(&pan_pwm);
         servo_pwm_close(&tilt_pwm);
         awnn_destroy(context);
@@ -415,6 +502,8 @@ int main(int argc, char **argv) {
     pthread_t inference_thread;
     if (pthread_create(&inference_thread, NULL, inference_thread_main, &worker_args) != 0) {
         fprintf(stderr, "Failed to create inference thread\n");
+        mosfet_gpio_close(&pan_power_gpio);
+        mosfet_gpio_close(&tilt_power_gpio);
         servo_pwm_close(&pan_pwm);
         servo_pwm_close(&tilt_pwm);
         awnn_destroy(context);
@@ -527,6 +616,8 @@ int main(int argc, char **argv) {
 
     awnn_destroy(context);
     awnn_uninit();
+    mosfet_gpio_close(&pan_power_gpio);
+    mosfet_gpio_close(&tilt_power_gpio);
     servo_pwm_close(&pan_pwm);
     servo_pwm_close(&tilt_pwm);
     camera.release();
