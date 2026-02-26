@@ -80,6 +80,41 @@ struct RandomScanState {
     int frames_until_retarget;
 };
 
+enum CatPlayAlgorithm {
+    CAT_PLAY_OVAL = 0,
+    CAT_PLAY_STARE_DART = 1,
+    CAT_PLAY_ZIGZAG_RETREAT = 2,
+};
+
+enum StareDartPhase {
+    STARE_DART_HOLD = 0,
+    STARE_DART_DART = 1,
+};
+
+enum ZigZagPhase {
+    ZIGZAG_APPROACH = 0,
+    ZIGZAG_SHAKE = 1,
+    ZIGZAG_RETREAT = 2,
+    ZIGZAG_RETURN = 3,
+};
+
+struct CatPlayState {
+    enum CatPlayAlgorithm algorithm;
+
+    cv::Point2f last_cat_center;
+    float cat_still_time_sec;
+
+    enum StareDartPhase stare_dart_phase;
+    float stare_dart_hold_time_sec;
+    cv::Point2f stare_dart_hold_point;
+    cv::Point2f stare_dart_dart_target;
+
+    enum ZigZagPhase zigzag_phase;
+    float zigzag_phase_time_sec;
+    cv::Point2f zigzag_front_point;
+    cv::Point2f zigzag_retreat_point;
+};
+
 struct InferenceShared {
     pthread_mutex_t mutex;
     pthread_cond_t cond;
@@ -372,18 +407,185 @@ static LaserDotObservation detect_laser_dot(const cv::Mat &frame_bgr) {
     return observation;
 }
 
-static cv::Point2f build_circle_target(const Yolov5CatTrackInfo &cat, int frame_index) {
+static float point_distance(const cv::Point2f &a, const cv::Point2f &b) {
+    float dx = a.x - b.x;
+    float dy = a.y - b.y;
+    return sqrtf(dx * dx + dy * dy);
+}
+
+static cv::Point2f clamp_point_to_frame(const cv::Point2f &p, int frame_w, int frame_h) {
+    return cv::Point2f(
+        clampf(p.x, 0.0f, (float)frame_w - 1.0f),
+        clampf(p.y, 0.0f, (float)frame_h - 1.0f));
+}
+
+static int point_in_cat_bbox(const cv::Point2f &p, const Yolov5CatTrackInfo &cat) {
+    return (p.x >= cat.x && p.x <= (cat.x + cat.width) &&
+            p.y >= cat.y && p.y <= (cat.y + cat.height));
+}
+
+static cv::Point2f random_point_outside_cat(const Yolov5CatTrackInfo &cat, int frame_w, int frame_h) {
+    for (int i = 0; i < 24; ++i) {
+        cv::Point2f p(random_float_range(0.0f, (float)frame_w - 1.0f),
+                      random_float_range(0.0f, (float)frame_h - 1.0f));
+        if (!point_in_cat_bbox(p, cat)) {
+            return p;
+        }
+    }
+
+    return cv::Point2f(0.0f, 0.0f);
+}
+
+static cv::Point2f furthest_frame_corner_from_cat(const Yolov5CatTrackInfo &cat, int frame_w, int frame_h) {
+    cv::Point2f center(cat.x + cat.width * 0.5f, cat.y + cat.height * 0.5f);
+    cv::Point2f corners[4] = {
+        cv::Point2f(0.0f, 0.0f),
+        cv::Point2f((float)frame_w - 1.0f, 0.0f),
+        cv::Point2f(0.0f, (float)frame_h - 1.0f),
+        cv::Point2f((float)frame_w - 1.0f, (float)frame_h - 1.0f),
+    };
+
+    int best = 0;
+    float best_dist = -1.0f;
+    for (int i = 0; i < 4; ++i) {
+        float d = point_distance(corners[i], center);
+        if (d > best_dist) {
+            best = i;
+            best_dist = d;
+        }
+    }
+
+    return corners[best];
+}
+
+static enum CatPlayAlgorithm pick_other_algorithm(enum CatPlayAlgorithm current) {
+    int r = rand() % 2;
+    if (current == CAT_PLAY_OVAL) {
+        return r == 0 ? CAT_PLAY_STARE_DART : CAT_PLAY_ZIGZAG_RETREAT;
+    }
+    if (current == CAT_PLAY_STARE_DART) {
+        return r == 0 ? CAT_PLAY_OVAL : CAT_PLAY_ZIGZAG_RETREAT;
+    }
+    return r == 0 ? CAT_PLAY_OVAL : CAT_PLAY_STARE_DART;
+}
+
+static cv::Point2f build_oval_target(const Yolov5CatTrackInfo &cat, int frame_index, int frame_w, int frame_h) {
     const float center_x = cat.x + cat.width * 0.5f;
     const float center_y = cat.y + cat.height * 0.5f;
-    const float radius = clampf(fminf(cat.width, cat.height) * 0.28f, 12.0f, 65.0f);
 
-    // Slow circular motion around cat center.
-    const float angular_step_rad = 0.18f;
-    const float theta = frame_index * angular_step_rad;
+    // Oval follows cat bbox proportions and adds 10-20% outside the cat bounds.
+    const float margin_scale = 1.15f;
+    const float rx = clampf(cat.width * 0.5f * margin_scale, 12.0f, 140.0f);
+    const float ry = clampf(cat.height * 0.5f * margin_scale, 12.0f, 140.0f);
+    const float theta = frame_index * 0.18f;
 
-    return cv::Point2f(
-        center_x + radius * cosf(theta),
-        center_y + radius * sinf(theta));
+    cv::Point2f p(center_x + rx * cosf(theta), center_y + ry * sinf(theta));
+    return clamp_point_to_frame(p, frame_w, frame_h);
+}
+
+static void maybe_transition_with_probability(struct CatPlayState *state, int percent) {
+    if ((rand() % 100) < percent) {
+        state->algorithm = pick_other_algorithm(state->algorithm);
+    }
+}
+
+static cv::Point2f build_cat_play_target(
+    struct CatPlayState *state,
+    const Yolov5CatTrackInfo &cat,
+    const cv::Point2f &laser,
+    int frame_index,
+    int frame_w,
+    int frame_h,
+    float dt_sec,
+    const char **algo_name_out) {
+    const cv::Point2f cat_center(cat.x + cat.width * 0.5f, cat.y + cat.height * 0.5f);
+
+    // If cat hasn't moved for 60s, switch to one of the other play algorithms.
+    if (point_distance(cat_center, state->last_cat_center) < 10.0f) {
+        state->cat_still_time_sec += dt_sec;
+    } else {
+        state->cat_still_time_sec = 0.0f;
+        state->last_cat_center = cat_center;
+    }
+    if (state->cat_still_time_sec >= 60.0f) {
+        state->algorithm = pick_other_algorithm(state->algorithm);
+        state->cat_still_time_sec = 0.0f;
+    }
+
+    if (state->algorithm == CAT_PLAY_OVAL) {
+        *algo_name_out = "oval";
+        return build_oval_target(cat, frame_index, frame_w, frame_h);
+    }
+
+    if (state->algorithm == CAT_PLAY_STARE_DART) {
+        *algo_name_out = "stare_dart";
+        if (state->stare_dart_phase == STARE_DART_HOLD) {
+            if (state->stare_dart_hold_time_sec <= 0.0f) {
+                state->stare_dart_hold_time_sec = random_float_range(5.0f, 30.0f);
+                state->stare_dart_hold_point = laser;
+            }
+            state->stare_dart_hold_time_sec -= dt_sec;
+            if (state->stare_dart_hold_time_sec <= 0.0f) {
+                state->stare_dart_phase = STARE_DART_DART;
+                state->stare_dart_dart_target = random_point_outside_cat(cat, frame_w, frame_h);
+                maybe_transition_with_probability(state, 10);
+            }
+            return clamp_point_to_frame(state->stare_dart_hold_point, frame_w, frame_h);
+        }
+
+        if (point_in_cat_bbox(state->stare_dart_dart_target, cat)) {
+            state->stare_dart_dart_target = random_point_outside_cat(cat, frame_w, frame_h);
+        }
+        if (point_distance(laser, state->stare_dart_dart_target) < 20.0f) {
+            state->stare_dart_phase = STARE_DART_HOLD;
+            state->stare_dart_hold_time_sec = random_float_range(5.0f, 30.0f);
+            state->stare_dart_hold_point = laser;
+        }
+        return clamp_point_to_frame(state->stare_dart_dart_target, frame_w, frame_h);
+    }
+
+    *algo_name_out = "zigzag_retreat";
+    if (state->zigzag_phase == ZIGZAG_APPROACH) {
+        state->zigzag_front_point = clamp_point_to_frame(
+            cv::Point2f(cat_center.x, cat.y - cat.height * 0.25f), frame_w, frame_h);
+        if (point_distance(laser, state->zigzag_front_point) < 18.0f) {
+            state->zigzag_phase = ZIGZAG_SHAKE;
+            state->zigzag_phase_time_sec = 0.0f;
+        }
+        return state->zigzag_front_point;
+    }
+
+    if (state->zigzag_phase == ZIGZAG_SHAKE) {
+        state->zigzag_phase_time_sec += dt_sec;
+        const float amp_x = clampf(cat.width * 0.45f, 12.0f, 80.0f);
+        const float amp_y = clampf(cat.height * 0.18f, 6.0f, 35.0f);
+        const float t = state->zigzag_phase_time_sec * 8.0f;
+        const float saw = (fmodf(t, 2.0f) < 1.0f) ? 1.0f : -1.0f;
+        cv::Point2f p(state->zigzag_front_point.x + saw * amp_x,
+                      state->zigzag_front_point.y + sinf(t * 1.7f) * amp_y);
+        if (state->zigzag_phase_time_sec >= 2.5f) {
+            state->zigzag_phase = ZIGZAG_RETREAT;
+            state->zigzag_retreat_point = furthest_frame_corner_from_cat(cat, frame_w, frame_h);
+        }
+        return clamp_point_to_frame(p, frame_w, frame_h);
+    }
+
+    if (state->zigzag_phase == ZIGZAG_RETREAT) {
+        if (point_distance(laser, state->zigzag_retreat_point) < 20.0f) {
+            state->zigzag_phase = ZIGZAG_RETURN;
+            maybe_transition_with_probability(state, 10);
+        }
+        return state->zigzag_retreat_point;
+    }
+
+    // Return from retreat to cat front and repeat.
+    state->zigzag_front_point = clamp_point_to_frame(
+        cv::Point2f(cat_center.x, cat.y - cat.height * 0.25f), frame_w, frame_h);
+    if (point_distance(laser, state->zigzag_front_point) < 18.0f) {
+        state->zigzag_phase = ZIGZAG_SHAKE;
+        state->zigzag_phase_time_sec = 0.0f;
+    }
+    return state->zigzag_front_point;
 }
 
 static void update_servo_state(
@@ -547,6 +749,18 @@ int main(int argc, char **argv) {
     ServoState servo_state = {0.0f, 0.0f};
     struct RandomScanState random_scan = {0.0f, 0.0f, RANDOM_MIN_SPEED_DEG_PER_SEC, 0};
     retarget_random_scan(&random_scan);
+    struct CatPlayState cat_play_state;
+    cat_play_state.algorithm = CAT_PLAY_OVAL;
+    cat_play_state.last_cat_center = cv::Point2f(0.0f, 0.0f);
+    cat_play_state.cat_still_time_sec = 0.0f;
+    cat_play_state.stare_dart_phase = STARE_DART_HOLD;
+    cat_play_state.stare_dart_hold_time_sec = 0.0f;
+    cat_play_state.stare_dart_hold_point = cv::Point2f(0.0f, 0.0f);
+    cat_play_state.stare_dart_dart_target = cv::Point2f(0.0f, 0.0f);
+    cat_play_state.zigzag_phase = ZIGZAG_APPROACH;
+    cat_play_state.zigzag_phase_time_sec = 0.0f;
+    cat_play_state.zigzag_front_point = cv::Point2f(0.0f, 0.0f);
+    cat_play_state.zigzag_retreat_point = cv::Point2f(0.0f, 0.0f);
     cv::Point2f estimated_laser(0.0f, 0.0f);
     int frame_index = 0;
 
@@ -597,21 +811,32 @@ int main(int argc, char **argv) {
         pthread_mutex_unlock(&inference_shared.mutex);
 
         if (has_track_info && track_info.has_cat) {
-            cv::Point2f circle_target = build_circle_target(track_info, frame_index);
-            update_servo_state(&servo_state, estimated_laser, circle_target, frame.cols, frame.rows);
+            const char *algo_name = "oval";
+            cv::Point2f play_target = build_cat_play_target(
+                &cat_play_state,
+                track_info,
+                estimated_laser,
+                frame_index,
+                frame.cols,
+                frame.rows,
+                control_dt_sec,
+                &algo_name);
+            update_servo_state(&servo_state, estimated_laser, play_target, frame.cols, frame.rows);
             servo_pwm_set_angle(&pan_pwm, servo_state.pan_deg);
             servo_pwm_set_angle(&tilt_pwm, servo_state.tilt_deg);
 
             fprintf(stderr,
-                    "cat_conf=%.2f laser=(%.1f,%.1f) circle_target=(%.1f,%.1f) servo_pan=%.2f servo_tilt=%.2f\n",
+                    "cat_conf=%.2f algo=%s laser=(%.1f,%.1f) target=(%.1f,%.1f) servo_pan=%.2f servo_tilt=%.2f\n",
                     track_info.confidence,
+                    algo_name,
                     estimated_laser.x,
                     estimated_laser.y,
-                    circle_target.x,
-                    circle_target.y,
+                    play_target.x,
+                    play_target.y,
                     servo_state.pan_deg,
                     servo_state.tilt_deg);
         } else {
+            cat_play_state.cat_still_time_sec = 0.0f;
             update_random_scan_servo(&servo_state, &random_scan, control_dt_sec);
             servo_pwm_set_angle(&pan_pwm, servo_state.pan_deg);
             servo_pwm_set_angle(&tilt_pwm, servo_state.tilt_deg);
