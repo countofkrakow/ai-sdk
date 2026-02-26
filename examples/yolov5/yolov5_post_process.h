@@ -4,7 +4,16 @@
 extern "C" {
 #endif
 
-int yolov5_post_process(const char *imagepath, float **output);
+typedef struct Yolov5CatTrackInfo {
+    int has_cat;
+    float confidence;
+    float x;
+    float y;
+    float width;
+    float height;
+} Yolov5CatTrackInfo;
+
+int yolov5_post_process(const char *imagepath, float **output, Yolov5CatTrackInfo *track_info);
 
 #ifdef __cplusplus
 }
