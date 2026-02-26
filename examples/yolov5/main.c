@@ -1,3 +1,29 @@
+/*
+ * High-level algorithm overview
+ * =============================
+ * 1) Capture loop (main thread)
+ *    - Read newest camera frame.
+ *    - Detect red laser dot position on that newest frame.
+ *    - Publish newest frame to inference worker (non-blocking handoff).
+ *    - Apply control immediately using latest available cat track:
+ *        a) If cat exists: move laser in a circle around cat center.
+ *        b) If no cat: execute random scan motion.
+ *    - Write pan/tilt angles to PWM outputs each loop.
+ *
+ * 2) Inference worker thread
+ *    - Wait for latest frame from shared queue (single latest frame model).
+ *    - Run YOLO pre-process + NPU inference + post-process.
+ *    - Publish best cat detection (Yolov5CatTrackInfo) back to shared state.
+ *
+ * 3) Hardware control
+ *    - PWM controls servo signal pulse widths.
+ *    - GPIO controls MOSFET power-enable lines for each servo rail.
+ *
+ * Notes:
+ * - Control and UI remain responsive while inference is running.
+ * - Only the most recent frame is kept for inference; stale frames are dropped.
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -139,6 +165,8 @@ static void *inference_thread_main(void *arg) {
             break;
         }
 
+        // Consume only the latest frame. If producer is faster than inference,
+        // intermediate frames are intentionally skipped to reduce control latency.
         frame = args->shared->latest_frame.clone();
         args->shared->has_new_frame = 0;
         args->shared->inference_running = 1;
@@ -152,6 +180,7 @@ static void *inference_thread_main(void *arg) {
         track_info.width = 0.0f;
         track_info.height = 0.0f;
 
+        // Keep existing pre/post interfaces by writing frame to image file path.
         if (!frame.empty() && cv::imwrite(args->frame_file, frame)) {
             unsigned int file_size = 0;
             unsigned char *plant_data = yolov5_pre_process(args->frame_file, &file_size);
@@ -548,16 +577,20 @@ int main(int argc, char **argv) {
             continue;
         }
 
+        // Laser feedback always runs on the newest camera frame, even when
+        // inference is still busy on an earlier frame.
         LaserDotObservation laser_obs = detect_laser_dot(frame);
         if (laser_obs.detected) {
             estimated_laser = laser_obs.center;
         }
 
         pthread_mutex_lock(&inference_shared.mutex);
+        // Publish newest frame for asynchronous inference.
         inference_shared.latest_frame = frame.clone();
         inference_shared.has_new_frame = 1;
         pthread_cond_signal(&inference_shared.cond);
 
+        // Read most recent detection result (may be from previous frame).
         Yolov5CatTrackInfo track_info = inference_shared.latest_track;
         int has_track_info = inference_shared.has_cat_info;
         int inference_running = inference_shared.inference_running;
