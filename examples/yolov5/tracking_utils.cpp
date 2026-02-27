@@ -94,19 +94,26 @@ LaserDotObservation stabilize_laser_observation(LaserTrackState *state, const La
         state->last_area = raw.area;
 
         if (state->stable_detect_frames >= 2) {
+            state->has_valid_lock = 1;
             out = raw;
         }
         return out;
     }
 
     state->stable_detect_frames = 0;
-    if (state->hold_miss_frames < 6) {
+
+    // Only synthesize hold observations if we have previously confirmed a real dot.
+    if (state->has_valid_lock && state->hold_miss_frames < 6) {
         state->hold_miss_frames++;
         out.detected = 1;
         out.center = state->last_center;
         out.area = state->last_area;
+        return out;
     }
 
+    // Hold window expired (or never had a lock): require fresh stable reacquisition.
+    state->has_valid_lock = 0;
+    state->hold_miss_frames = 0;
     return out;
 }
 

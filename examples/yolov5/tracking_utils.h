@@ -13,6 +13,8 @@ struct LaserDotObservation {
 struct LaserTrackState {
     int stable_detect_frames;
     int hold_miss_frames;
+    // Set after we have emitted at least one confirmed/stable observation.
+    int has_valid_lock;
     cv::Point2f last_center;
     float last_area;
 };
