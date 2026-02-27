@@ -118,14 +118,13 @@ static enum CatPlayAlgorithm pick_other_algorithm(enum CatPlayAlgorithm current)
     return r == 0 ? CAT_PLAY_OVAL : CAT_PLAY_STARE_DART;
 }
 
-static cv::Point2f build_oval_target(const Yolov5CatTrackInfo &cat, int frame_index, int frame_w, int frame_h) {
+static cv::Point2f build_oval_target(const Yolov5CatTrackInfo &cat, float phase, int frame_w, int frame_h) {
     const float center_x = cat.x + cat.width * 0.5f;
     const float center_y = cat.y + cat.height * 0.5f;
     const float margin_scale = 1.15f;
     const float rx = clampf_local(cat.width * 0.5f * margin_scale, 12.0f, 140.0f);
     const float ry = clampf_local(cat.height * 0.5f * margin_scale, 12.0f, 140.0f);
-    const float theta = frame_index * 0.18f;
-    return clamp_point_to_frame(cv::Point2f(center_x + rx * cosf(theta), center_y + ry * sinf(theta)), frame_w, frame_h);
+    return clamp_point_to_frame(cv::Point2f(center_x + rx * cosf(phase), center_y + ry * sinf(phase)), frame_w, frame_h);
 }
 
 static void maybe_transition_with_probability(struct CatPlayState *state, int percent) {
@@ -157,6 +156,28 @@ static void apply_confidence_mode_bias(struct CatPlayState *state, float confide
     }
 }
 
+static void maybe_flip_oval_direction_on_catch(struct CatPlayState *state,
+                                               const Yolov5CatTrackInfo &cat,
+                                               const cv::Point2f &cat_center,
+                                               const cv::Point2f &laser,
+                                               float dt_sec) {
+    state->oval_direction_cooldown_sec = clampf_local(state->oval_direction_cooldown_sec - dt_sec, 0.0f, 2.0f);
+
+    // "Trying to catch" heuristic: laser gets very close to cat center.
+    const float catch_radius = clampf_local(0.18f * (cat.width + cat.height), 10.0f, 42.0f);
+    if (point_distance(cat_center, laser) > catch_radius || state->oval_direction_cooldown_sec > 0.0f) {
+        return;
+    }
+
+    // Randomized reaction: usually reverse direction, sometimes keep direction.
+    if ((rand() % 100) < 70) {
+        state->oval_direction = -state->oval_direction;
+    }
+
+    // Debounce to avoid flipping every frame while the cat hovers near the laser.
+    state->oval_direction_cooldown_sec = random_float_range(0.4f, 1.2f);
+}
+
 void init_cat_play_state(struct CatPlayState *state) {
     state->algorithm = CAT_PLAY_OVAL;
     state->last_cat_center = cv::Point2f(0.0f, 0.0f);
@@ -165,6 +186,9 @@ void init_cat_play_state(struct CatPlayState *state) {
     state->prev_cat_laser_dist = 0.0f;
     state->session_time_sec = 0.0f;
     state->calm_time_sec = 0.0f;
+    state->oval_phase = 0.0f;
+    state->oval_direction = 1;
+    state->oval_direction_cooldown_sec = 0.0f;
     state->stare_dart_phase = STARE_DART_HOLD;
     state->stare_dart_hold_time_sec = 0.0f;
     state->stare_dart_hold_point = cv::Point2f(0.0f, 0.0f);
@@ -184,6 +208,7 @@ cv::Point2f build_cat_play_target(
     int frame_h,
     float dt_sec,
     const char **algo_name_out) {
+    (void)frame_index;
     const cv::Point2f cat_center(cat.x + cat.width * 0.5f, cat.y + cat.height * 0.5f);
 
     update_engagement_score(state, cat_center, laser);
@@ -213,7 +238,10 @@ cv::Point2f build_cat_play_target(
 
     if (state->algorithm == CAT_PLAY_OVAL) {
         *algo_name_out = "oval";
-        return build_oval_target(cat, frame_index, frame_w, frame_h);
+        maybe_flip_oval_direction_on_catch(state, cat, cat_center, laser, dt_sec);
+        const float direction = (state->oval_direction >= 0) ? 1.0f : -1.0f;
+        state->oval_phase += direction * 0.18f;
+        return build_oval_target(cat, state->oval_phase, frame_w, frame_h);
     }
 
     if (state->algorithm == CAT_PLAY_STARE_DART) {

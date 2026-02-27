@@ -34,6 +34,11 @@ struct CatPlayState {
     float session_time_sec;
     float calm_time_sec;
 
+    // Oval-mode orbit state: direction is +1/-1 for cw/ccw style phase motion.
+    float oval_phase;
+    int oval_direction;
+    float oval_direction_cooldown_sec;
+
     enum StareDartPhase stare_dart_phase;
     float stare_dart_hold_time_sec;
     cv::Point2f stare_dart_hold_point;
