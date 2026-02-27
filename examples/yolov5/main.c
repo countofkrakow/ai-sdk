@@ -307,6 +307,8 @@ int main(int argc, char **argv) {
 
     // Deadman: if camera stream stalls, center servos and cut power.
     time_t last_frame_time = time(NULL);
+    int servo_rails_powered = 1;
+    int deadman_active = 0;
 
     int printed_resolution = 0;
     cv::Point2f estimated_laser(0.0f, 0.0f);
@@ -315,16 +317,33 @@ int main(int argc, char **argv) {
     while (1) {
         cv::Mat raw_frame;
         if (!camera.read(raw_frame) || raw_frame.empty()) {
-            if (difftime(time(NULL), last_frame_time) > 2.0) {
+            if (difftime(time(NULL), last_frame_time) > 2.0 && !deadman_active) {
                 // Safety: no fresh camera for >2s, stop motion and power rails.
                 servo_pwm_set_angle(&pan_pwm, 0.0f);
                 servo_pwm_set_angle(&tilt_pwm, 0.0f);
                 mosfet_gpio_set(&pan_power_gpio, false);
                 mosfet_gpio_set(&tilt_power_gpio, false);
                 mosfet_gpio_set(&laser_gpio, false);
+                servo_rails_powered = 0;
+                deadman_active = 1;
+                fprintf(stderr, "Deadman engaged: camera stalled, servo rails powered off.\n");
             }
             usleep(100000);
             continue;
+        }
+
+        if (deadman_active && !servo_rails_powered) {
+            if (mosfet_gpio_set(&pan_power_gpio, true) < 0 ||
+                mosfet_gpio_set(&tilt_power_gpio, true) < 0) {
+                fprintf(stderr, "Deadman recovery failed: unable to re-enable servo rails.\n");
+                usleep(100000);
+                continue;
+            }
+            // Keep laser OFF on recovery; normal loop policy controls it afterwards.
+            mosfet_gpio_set(&laser_gpio, false);
+            servo_rails_powered = 1;
+            deadman_active = 0;
+            fprintf(stderr, "Deadman cleared: camera recovered, servo rails re-enabled.\n");
         }
 
         if (!printed_resolution) {
