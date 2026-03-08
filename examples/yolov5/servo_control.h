@@ -3,12 +3,20 @@
 
 #include <stdbool.h>
 #include <opencv2/core.hpp>
-#if __has_include(<periphery/pwm.h>)
-#include <periphery/pwm.h>
-#include <periphery/gpio.h>
+
+#if defined(__has_include)
+#  if __has_include(<periphery/pwm.h>) && __has_include(<periphery/gpio.h>)
+#    include <periphery/pwm.h>
+#    include <periphery/gpio.h>
+#  elif __has_include(<pwm.h>) && __has_include(<gpio.h>)
+#    include <pwm.h>
+#    include <gpio.h>
+#  else
+#    error "libperiphery headers not found: expected <periphery/pwm.h> and <periphery/gpio.h>"
+#  endif
 #else
-#include <pwm.h>
-#include <gpio.h>
+#  include <periphery/pwm.h>
+#  include <periphery/gpio.h>
 #endif
 
 struct ServoState {
