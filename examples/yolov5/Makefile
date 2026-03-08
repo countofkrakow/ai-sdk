@@ -5,8 +5,13 @@ include ../../machinfo/$(AI_SDK_PLATFORM)/config.mk
 endif
 
 INCLUDE += -I$(INSTALL_PREFIX)/usr/include -I$(STAGING_DIR)/usr/include/opencv4 -I../libawnn_viplite -I../libawutils -I../../
-LIBS    += -L $(INSTALL_PREFIX)/usr/lib -Wl,-rpath-link,$(INSTALL_PREFIX)/usr/lib -lopencv_core -lopencv_imgcodecs -lopencv_imgproc -lopencv_videoio -lopencv_highgui -ljpeg
-SRCS    += main.c yolov5_post_process.cpp yolov5_pre_process.cpp ../libawnn_viplite/awnn_lib.c ../libawnn_viplite/awnn_quantize.c ../libawutils/image_utils.c
+LIBS    += -L $(INSTALL_PREFIX)/usr/lib -L $(INSTALL_PREFIX)/usr/lib/aarch64-linux-gnu -Wl,-rpath-link,$(INSTALL_PREFIX)/usr/lib -Wl,-rpath-link,$(INSTALL_PREFIX)/usr/lib/aarch64-linux-gnu -lopencv_core -lopencv_imgcodecs -lopencv_imgproc -lopencv_videoio -lopencv_highgui -ljpeg -lperiphery
+SRCS    += main.c tracking_utils.cpp servo_control.cpp play_algorithms.cpp yolov5_post_process.cpp yolov5_pre_process.cpp ../libawnn_viplite/awnn_lib.c ../libawnn_viplite/awnn_quantize.c ../libawutils/image_utils.c
+
+# Prefer the system OpenCL SONAME to avoid accidentally picking an incompatible
+# vendor libOpenCL from other -L search paths (can cause OPENCL_1.x unresolved
+# symbols from transitive libs such as libavutil via OpenCV videoio).
+OPENCL_LIB ?= $(INSTALL_PREFIX)/usr/lib/aarch64-linux-gnu/libOpenCL.so.1
 
 CFLAGS += -g -O0 -DDEBUG -D_DEBUG
 
@@ -26,7 +31,7 @@ endif
 
 
 $(TARGET): $(SRCS)
-	$(CXX) $(CFLAGS) -g -o $@ $^ $(INCLUDE) $(LIBS) $(LIBS_VIP) -Wl,--no-as-needed -lOpenCL -Wl,--as-needed -lm
+	$(CXX) $(CFLAGS) -g -o $@ $^ $(INCLUDE) $(LIBS) $(LIBS_VIP) -Wl,--no-as-needed $(OPENCL_LIB) -Wl,--as-needed -lm -pthread
 
 all:$(TARGET) install
 
@@ -42,4 +47,3 @@ install: $(TARGET)
 
 clean:
 	rm -rf $(TARGET) *.o *~
-
