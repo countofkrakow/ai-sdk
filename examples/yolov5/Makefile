@@ -41,8 +41,6 @@ all:$(TARGET) install
 install: $(TARGET)
 	-@mkdir -p $(INSTALL_DIR)/usr/bin
 	@install -m 0755 $(TARGET) $(INSTALL_DIR)/usr/bin/$(TARGET)
-	-@mkdir -p $(INSTALL_DIR)/etc/npu/yolov5
-	@install -m 0755 $(TARGET) $(INSTALL_DIR)/etc/npu/yolov5/$(TARGET)
 	-@mkdir -p $(INSTALL_DIR)/etc/npu/yolov5/model
 	@cp -f model/$(NPU_VERSION)/* $(INSTALL_DIR)/etc/npu/yolov5/model
 	-@mkdir -p $(INSTALL_DIR)/etc/npu/yolov5/input_data
