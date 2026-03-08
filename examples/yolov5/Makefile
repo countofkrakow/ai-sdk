@@ -37,13 +37,13 @@ all:$(TARGET) install
 
 install: $(TARGET)
 	-@mkdir -p $(INSTALL_PREFIX)/usr/bin
-	@cp $(TARGET) $(INSTALL_PREFIX)/usr/bin
+	@install -m 0755 $(TARGET) $(INSTALL_PREFIX)/usr/bin/$(TARGET)
 	-@mkdir -p $(INSTALL_PREFIX)/etc/npu/yolov5
-	@cp $(TARGET) $(INSTALL_PREFIX)/etc/npu/yolov5
+	@install -m 0755 $(TARGET) $(INSTALL_PREFIX)/etc/npu/yolov5/$(TARGET)
 	-@mkdir -p $(INSTALL_PREFIX)/etc/npu/yolov5/model
-	@cp model/$(NPU_VERSION)/* $(INSTALL_PREFIX)/etc/npu/yolov5/model
+	@cp -f model/$(NPU_VERSION)/* $(INSTALL_PREFIX)/etc/npu/yolov5/model
 	-@mkdir -p $(INSTALL_PREFIX)/etc/npu/yolov5/input_data
-	@cp input_data/* $(INSTALL_PREFIX)/etc/npu/yolov5/input_data
+	@cp -f input_data/* $(INSTALL_PREFIX)/etc/npu/yolov5/input_data
 
 clean:
 	rm -rf $(TARGET) *.o *~
