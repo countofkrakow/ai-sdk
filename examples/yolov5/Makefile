@@ -4,14 +4,17 @@ ifdef AI_SDK_PLATFORM
 include ../../machinfo/$(AI_SDK_PLATFORM)/config.mk
 endif
 
-INCLUDE += -I$(INSTALL_PREFIX)/usr/include -I$(STAGING_DIR)/usr/include/opencv4 -I../libawnn_viplite -I../libawutils -I../../
-LIBS    += -L $(INSTALL_PREFIX)/usr/lib -L $(INSTALL_PREFIX)/usr/lib/aarch64-linux-gnu -Wl,-rpath-link,$(INSTALL_PREFIX)/usr/lib -Wl,-rpath-link,$(INSTALL_PREFIX)/usr/lib/aarch64-linux-gnu -lopencv_core -lopencv_imgcodecs -lopencv_imgproc -lopencv_videoio -lopencv_highgui -ljpeg -lperiphery
+# Normalize trailing slash so INSTALL_PREFIX=./ does not become .//...
+INSTALL_DIR := $(patsubst %/,%,$(INSTALL_PREFIX))
+
+INCLUDE += -I$(INSTALL_DIR)/usr/include -I$(STAGING_DIR)/usr/include/opencv4 -I../libawnn_viplite -I../libawutils -I../../
+LIBS    += -L $(INSTALL_DIR)/usr/lib -L $(INSTALL_DIR)/usr/lib/aarch64-linux-gnu -Wl,-rpath-link,$(INSTALL_DIR)/usr/lib -Wl,-rpath-link,$(INSTALL_DIR)/usr/lib/aarch64-linux-gnu -lopencv_core -lopencv_imgcodecs -lopencv_imgproc -lopencv_videoio -lopencv_highgui -ljpeg -lperiphery
 SRCS    += main.c tracking_utils.cpp servo_control.cpp play_algorithms.cpp yolov5_post_process.cpp yolov5_pre_process.cpp ../libawnn_viplite/awnn_lib.c ../libawnn_viplite/awnn_quantize.c ../libawutils/image_utils.c
 
 # Prefer the system OpenCL SONAME to avoid accidentally picking an incompatible
 # vendor libOpenCL from other -L search paths (can cause OPENCL_1.x unresolved
 # symbols from transitive libs such as libavutil via OpenCV videoio).
-OPENCL_LIB ?= $(INSTALL_PREFIX)/usr/lib/aarch64-linux-gnu/libOpenCL.so.1
+OPENCL_LIB ?= $(INSTALL_DIR)/usr/lib/aarch64-linux-gnu/libOpenCL.so.1
 
 CFLAGS += -g -O0 -DDEBUG -D_DEBUG
 
@@ -36,14 +39,14 @@ $(TARGET): $(SRCS)
 all:$(TARGET) install
 
 install: $(TARGET)
-	-@mkdir -p $(INSTALL_PREFIX)/usr/bin
-	@install -m 0755 $(TARGET) $(INSTALL_PREFIX)/usr/bin/$(TARGET)
-	-@mkdir -p $(INSTALL_PREFIX)/etc/npu/yolov5
-	@install -m 0755 $(TARGET) $(INSTALL_PREFIX)/etc/npu/yolov5/$(TARGET)
-	-@mkdir -p $(INSTALL_PREFIX)/etc/npu/yolov5/model
-	@cp -f model/$(NPU_VERSION)/* $(INSTALL_PREFIX)/etc/npu/yolov5/model
-	-@mkdir -p $(INSTALL_PREFIX)/etc/npu/yolov5/input_data
-	@cp -f input_data/* $(INSTALL_PREFIX)/etc/npu/yolov5/input_data
+	-@mkdir -p $(INSTALL_DIR)/usr/bin
+	@install -m 0755 $(TARGET) $(INSTALL_DIR)/usr/bin/$(TARGET)
+	-@mkdir -p $(INSTALL_DIR)/etc/npu/yolov5
+	@install -m 0755 $(TARGET) $(INSTALL_DIR)/etc/npu/yolov5/$(TARGET)
+	-@mkdir -p $(INSTALL_DIR)/etc/npu/yolov5/model
+	@cp -f model/$(NPU_VERSION)/* $(INSTALL_DIR)/etc/npu/yolov5/model
+	-@mkdir -p $(INSTALL_DIR)/etc/npu/yolov5/input_data
+	@cp -f input_data/* $(INSTALL_DIR)/etc/npu/yolov5/input_data
 
 clean:
 	rm -rf $(TARGET) *.o *~
