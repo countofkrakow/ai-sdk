@@ -15,6 +15,7 @@
 #include <time.h>
 #include <pthread.h>
 #include <string.h>
+#include <dirent.h>
 
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
@@ -68,6 +69,72 @@ static unsigned int read_env_u32(const char *name, unsigned int default_value) {
     }
 
     return (unsigned int)parsed;
+}
+
+
+static int append_candidate_unique(struct PwmCandidate *out,
+                                   int *count,
+                                   int max_count,
+                                   unsigned int chip,
+                                   unsigned int channel) {
+    for (int i = 0; i < *count; ++i) {
+        if (out[i].chip == chip && out[i].channel == channel) {
+            return 0;
+        }
+    }
+    if (*count >= max_count) {
+        return -1;
+    }
+    out[*count].chip = chip;
+    out[*count].channel = channel;
+    (*count)++;
+    return 1;
+}
+
+static void append_sysfs_pwm_candidates(struct PwmCandidate *out,
+                                        int *count,
+                                        int max_count) {
+    DIR *dir = opendir("/sys/class/pwm");
+    if (dir == NULL) {
+        return;
+    }
+
+    struct dirent *entry = NULL;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strncmp(entry->d_name, "pwmchip", 7) != 0) {
+            continue;
+        }
+
+        char *end = NULL;
+        unsigned long chip_ul = strtoul(entry->d_name + 7, &end, 10);
+        if (end == entry->d_name + 7 || *end != '\0') {
+            continue;
+        }
+
+        char npwm_path[256];
+        snprintf(npwm_path, sizeof(npwm_path), "/sys/class/pwm/%s/npwm", entry->d_name);
+        FILE *f = fopen(npwm_path, "r");
+        if (f == NULL) {
+            continue;
+        }
+
+        int npwm = 0;
+        if (fscanf(f, "%d", &npwm) != 1 || npwm <= 0) {
+            fclose(f);
+            continue;
+        }
+        fclose(f);
+
+        if (npwm > 32) npwm = 32;
+        for (int ch = 0; ch < npwm; ++ch) {
+            if (append_candidate_unique(out, count, max_count, (unsigned int)chip_ul, (unsigned int)ch) < 0) {
+                closedir(dir);
+                return;
+            }
+        }
+    }
+
+    closedir(dir);
 }
 
 static int open_servo_with_fallback(struct ServoPwm *servo_pwm,
@@ -295,19 +362,33 @@ int main(int argc, char **argv) {
 
     struct ServoPwm pan_pwm = {0};
     struct ServoPwm tilt_pwm = {0};
-    const struct PwmCandidate pan_candidates[] = {
-        {pan_pwm_chip, pan_pwm_channel},
-        {1, 5}, {1, 4}, {0, 0}, {0, 1}, {2, 0}, {2, 1},
-    };
-    const struct PwmCandidate tilt_candidates[] = {
-        {tilt_pwm_chip, tilt_pwm_channel},
-        {1, 4}, {1, 5}, {0, 1}, {0, 0}, {2, 1}, {2, 0},
-    };
+    struct PwmCandidate pan_candidates[64] = {0};
+    struct PwmCandidate tilt_candidates[64] = {0};
+    int pan_candidate_count = 0;
+    int tilt_candidate_count = 0;
 
-    if (open_servo_with_fallback(&pan_pwm, "pan", pan_candidates,
-                                 (int)(sizeof(pan_candidates) / sizeof(pan_candidates[0]))) < 0 ||
-        open_servo_with_fallback(&tilt_pwm, "tilt", tilt_candidates,
-                                 (int)(sizeof(tilt_candidates) / sizeof(tilt_candidates[0]))) < 0 ||
+    append_candidate_unique(pan_candidates, &pan_candidate_count, 64, pan_pwm_chip, pan_pwm_channel);
+    append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, tilt_pwm_chip, tilt_pwm_channel);
+
+    append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 1, 5);
+    append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 1, 4);
+    append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 0, 0);
+    append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 0, 1);
+    append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 2, 0);
+    append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 2, 1);
+
+    append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, 1, 4);
+    append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, 1, 5);
+    append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, 0, 1);
+    append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, 0, 0);
+    append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, 2, 1);
+    append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, 2, 0);
+
+    append_sysfs_pwm_candidates(pan_candidates, &pan_candidate_count, 64);
+    append_sysfs_pwm_candidates(tilt_candidates, &tilt_candidate_count, 64);
+
+    if (open_servo_with_fallback(&pan_pwm, "pan", pan_candidates, pan_candidate_count) < 0 ||
+        open_servo_with_fallback(&tilt_pwm, "tilt", tilt_candidates, tilt_candidate_count) < 0 ||
         servo_pwm_set_angle(&pan_pwm, 0.0f) < 0 ||
         servo_pwm_set_angle(&tilt_pwm, 0.0f) < 0 ||
         servo_pwm_enable(&pan_pwm) < 0 ||
