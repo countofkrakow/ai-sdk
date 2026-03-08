@@ -3,6 +3,7 @@
 #include <float.h>
 #include <math.h>
 #include <stdlib.h>
+#include <opencv2/imgproc.hpp>
 
 static float clampf_local(float value, float min_v, float max_v) {
     return (value < min_v) ? min_v : ((value > max_v) ? max_v : value);
