@@ -11,12 +11,15 @@
 #  elif __has_include(<pwm.h>) && __has_include(<gpio.h>)
 #    include <pwm.h>
 #    include <gpio.h>
+#  elif __has_include(<periphery.h>)
+#    include <periphery.h>
+#  elif __has_include(<c-periphery/periphery.h>)
+#    include <c-periphery/periphery.h>
 #  else
-#    error "libperiphery headers not found: expected <periphery/pwm.h> and <periphery/gpio.h>"
+#    error "libperiphery headers not found: expected periphery/{pwm,gpio}.h, pwm.h/gpio.h, or periphery.h"
 #  endif
 #else
-#  include <periphery/pwm.h>
-#  include <periphery/gpio.h>
+#  include <periphery.h>
 #endif
 
 struct ServoState {
