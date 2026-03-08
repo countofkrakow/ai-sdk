@@ -103,12 +103,14 @@ So currently there is **no external config file or CLI/env tuning surface** for 
 
 Servo PWM mapping can vary by board image/kernel. The demo now supports env overrides:
 
-- `PAN_PWM_CHIP` (default `1`)
-- `PAN_PWM_CHANNEL` (default `5`)
-- `TILT_PWM_CHIP` (default `1`)
-- `TILT_PWM_CHANNEL` (default `4`)
+- `PAN_PWM_CHIP` (default `0`)
+- `PAN_PWM_CHANNEL` (default `1`)
+- `TILT_PWM_CHIP` (default `0`)
+- `TILT_PWM_CHANNEL` (default `0`)
 
 If defaults fail, startup tries a fallback candidate list and scans `/sys/class/pwm/*/npwm` to probe available chips/channels. A candidate is accepted only if open + initial angle set + enable all succeed, then the selected mapping is logged.
+
+Note: board docs often mention **GPIO pin numbers** (e.g. pin `10`) for PWM-capable pins. Those are not the same as Linux PWM `channel` indices used by this demo (`pwmchipX` + `channel`).
 
 ## 8) Typical control tick (conceptual)
 

@@ -315,10 +315,10 @@ int main(int argc, char **argv) {
     const char *camera_device = (argc == 3) ? argv[2] : "/dev/video0";
     const char *inference_frame_file = "live_frame.jpg";
 
-    const unsigned int pan_pwm_chip = read_env_u32("PAN_PWM_CHIP", 1);
-    const unsigned int pan_pwm_channel = read_env_u32("PAN_PWM_CHANNEL", 5);
-    const unsigned int tilt_pwm_chip = read_env_u32("TILT_PWM_CHIP", 1);
-    const unsigned int tilt_pwm_channel = read_env_u32("TILT_PWM_CHANNEL", 4);
+    const unsigned int pan_pwm_chip = read_env_u32("PAN_PWM_CHIP", 0);
+    const unsigned int pan_pwm_channel = read_env_u32("PAN_PWM_CHANNEL", 1);
+    const unsigned int tilt_pwm_chip = read_env_u32("TILT_PWM_CHIP", 0);
+    const unsigned int tilt_pwm_channel = read_env_u32("TILT_PWM_CHANNEL", 0);
 
     const char *mosfet_gpiochip_path = "/dev/gpiochip0";
     const unsigned int pan_power_gpio_line = 32;
