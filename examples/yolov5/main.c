@@ -140,21 +140,32 @@ static void append_sysfs_pwm_candidates(struct PwmCandidate *out,
 static int open_servo_with_fallback(struct ServoPwm *servo_pwm,
                                     const char *label,
                                     const struct PwmCandidate *candidates,
-                                    int candidate_count) {
+                                    int candidate_count,
+                                    float initial_angle_deg) {
     for (int i = 0; i < candidate_count; ++i) {
-        if (servo_pwm_open(servo_pwm, candidates[i].chip, candidates[i].channel) == 0) {
-            fprintf(stderr, "Using %s PWM chip=%u channel=%u\n", label, candidates[i].chip, candidates[i].channel);
-            return 0;
+        if (servo_pwm_open(servo_pwm, candidates[i].chip, candidates[i].channel) < 0) {
+            continue;
         }
+
+        // Candidate is only accepted when full bring-up succeeds.
+        if (servo_pwm_set_angle(servo_pwm, initial_angle_deg) < 0 ||
+            servo_pwm_enable(servo_pwm) < 0) {
+            servo_pwm_close(servo_pwm);
+            continue;
+        }
+
+        fprintf(stderr, "Using %s PWM chip=%u channel=%u\n", label, candidates[i].chip, candidates[i].channel);
+        return 0;
     }
 
     fprintf(stderr,
-            "Failed to open any %s PWM candidate. Set %s_PWM_CHIP and %s_PWM_CHANNEL for your board.\n",
+            "Failed to initialize any %s PWM candidate. Set %s_PWM_CHIP and %s_PWM_CHANNEL for your board.\n",
             label,
             (strcmp(label, "pan") == 0) ? "PAN" : "TILT",
             (strcmp(label, "pan") == 0) ? "PAN" : "TILT");
     return -1;
 }
+
 
 struct RandomScanState {
     float target_pan_deg;
@@ -387,12 +398,8 @@ int main(int argc, char **argv) {
     append_sysfs_pwm_candidates(pan_candidates, &pan_candidate_count, 64);
     append_sysfs_pwm_candidates(tilt_candidates, &tilt_candidate_count, 64);
 
-    if (open_servo_with_fallback(&pan_pwm, "pan", pan_candidates, pan_candidate_count) < 0 ||
-        open_servo_with_fallback(&tilt_pwm, "tilt", tilt_candidates, tilt_candidate_count) < 0 ||
-        servo_pwm_set_angle(&pan_pwm, 0.0f) < 0 ||
-        servo_pwm_set_angle(&tilt_pwm, 0.0f) < 0 ||
-        servo_pwm_enable(&pan_pwm) < 0 ||
-        servo_pwm_enable(&tilt_pwm) < 0) {
+    if (open_servo_with_fallback(&pan_pwm, "pan", pan_candidates, pan_candidate_count, 0.0f) < 0 ||
+        open_servo_with_fallback(&tilt_pwm, "tilt", tilt_candidates, tilt_candidate_count, 0.0f) < 0) {
         mosfet_gpio_close(&pan_power_gpio);
         mosfet_gpio_close(&tilt_power_gpio);
         mosfet_gpio_close(&laser_gpio);

@@ -108,7 +108,7 @@ Servo PWM mapping can vary by board image/kernel. The demo now supports env over
 - `TILT_PWM_CHIP` (default `1`)
 - `TILT_PWM_CHANNEL` (default `4`)
 
-If defaults fail, startup tries a fallback candidate list and also scans `/sys/class/pwm/*/npwm` to probe available chips/channels, then logs the selected mapping.
+If defaults fail, startup tries a fallback candidate list and scans `/sys/class/pwm/*/npwm` to probe available chips/channels. A candidate is accepted only if open + initial angle set + enable all succeed, then the selected mapping is logged.
 
 ## 8) Typical control tick (conceptual)
 
