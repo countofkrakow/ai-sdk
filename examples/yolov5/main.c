@@ -183,14 +183,17 @@ static void *inference_thread_main(void *arg) {
 }
 
 int main(int argc, char **argv) {
-    printf("%s nbg [camera_device]\n", argv[0]);
-    if (argc < 2) {
-        printf("Arguments count %d is incorrect!\n", argc);
+    if (argc < 2 || argc > 3) {
+        fprintf(stderr,
+                "Usage: %s <nbg> [camera_device]\n"
+                "  nbg: path to YOLOv5 .nb model\n"
+                "  camera_device: optional V4L2 node (default: /dev/video0)\n",
+                argv[0]);
         return -1;
     }
 
     const char *nbg = argv[1];
-    const char *camera_device = (argc >= 3) ? argv[2] : "/dev/video0";
+    const char *camera_device = (argc == 3) ? argv[2] : "/dev/video0";
     const char *inference_frame_file = "live_frame.jpg";
 
     const unsigned int pan_pwm_chip = 1;
