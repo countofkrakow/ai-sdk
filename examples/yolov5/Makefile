@@ -39,11 +39,13 @@ $(TARGET): $(SRCS)
 all:$(TARGET) install
 
 install: $(TARGET)
-	-@mkdir -p $(INSTALL_DIR)/usr/bin
+	@install -d $(INSTALL_DIR)/usr/bin
 	@install -m 0755 $(TARGET) $(INSTALL_DIR)/usr/bin/$(TARGET)
-	-@mkdir -p $(INSTALL_DIR)/etc/npu/yolov5/model
+	@install -d $(INSTALL_DIR)/etc/npu
+	@[ -d $(INSTALL_DIR)/etc/npu/yolov5 ] || [ ! -e $(INSTALL_DIR)/etc/npu/yolov5 ] || rm -f $(INSTALL_DIR)/etc/npu/yolov5
+	@install -d $(INSTALL_DIR)/etc/npu/yolov5/model
 	@cp -f model/$(NPU_VERSION)/* $(INSTALL_DIR)/etc/npu/yolov5/model
-	-@mkdir -p $(INSTALL_DIR)/etc/npu/yolov5/input_data
+	@install -d $(INSTALL_DIR)/etc/npu/yolov5/input_data
 	@cp -f input_data/* $(INSTALL_DIR)/etc/npu/yolov5/input_data
 
 clean:
