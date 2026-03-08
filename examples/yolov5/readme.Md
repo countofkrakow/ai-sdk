@@ -99,7 +99,18 @@ Examples include HSV ranges, binary thresholding, area/circularity gates, and re
 
 So currently there is **no external config file or CLI/env tuning surface** for those thresholds in this demo.
 
-## 7) Typical control tick (conceptual)
+## 7) PWM pin mapping overrides (runtime)
+
+Servo PWM mapping can vary by board image/kernel. The demo now supports env overrides:
+
+- `PAN_PWM_CHIP` (default `1`)
+- `PAN_PWM_CHANNEL` (default `5`)
+- `TILT_PWM_CHIP` (default `1`)
+- `TILT_PWM_CHANNEL` (default `4`)
+
+If defaults fail, startup will also try a short fallback candidate list and log the selected mapping.
+
+## 8) Typical control tick (conceptual)
 
 1. Grab frame from camera.
 2. Push latest frame for worker inference (non-blocking producer style).
@@ -110,7 +121,7 @@ So currently there is **no external config file or CLI/env tuning surface** for 
 7. Apply laser on/off policy and safety checks.
 8. Repeat.
 
-## 8) Known limitations / next logical improvements
+## 9) Known limitations / next logical improvements
 
 - Add true multi-object tracking (ID association) instead of stickiness-only lock.
 - Expose laser CV thresholds as runtime tunables (env/config CLI).

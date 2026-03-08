@@ -48,6 +48,47 @@ struct InferenceThreadArgs {
     struct InferenceShared *shared;
 };
 
+
+struct PwmCandidate {
+    unsigned int chip;
+    unsigned int channel;
+};
+
+static unsigned int read_env_u32(const char *name, unsigned int default_value) {
+    const char *v = getenv(name);
+    if (v == NULL || *v == '\0') {
+        return default_value;
+    }
+
+    char *end = NULL;
+    unsigned long parsed = strtoul(v, &end, 10);
+    if (end == v || *end != '\0') {
+        fprintf(stderr, "Ignoring invalid %s=%s (expected unsigned integer)\n", name, v);
+        return default_value;
+    }
+
+    return (unsigned int)parsed;
+}
+
+static int open_servo_with_fallback(struct ServoPwm *servo_pwm,
+                                    const char *label,
+                                    const struct PwmCandidate *candidates,
+                                    int candidate_count) {
+    for (int i = 0; i < candidate_count; ++i) {
+        if (servo_pwm_open(servo_pwm, candidates[i].chip, candidates[i].channel) == 0) {
+            fprintf(stderr, "Using %s PWM chip=%u channel=%u\n", label, candidates[i].chip, candidates[i].channel);
+            return 0;
+        }
+    }
+
+    fprintf(stderr,
+            "Failed to open any %s PWM candidate. Set %s_PWM_CHIP and %s_PWM_CHANNEL for your board.\n",
+            label,
+            (strcmp(label, "pan") == 0) ? "PAN" : "TILT",
+            (strcmp(label, "pan") == 0) ? "PAN" : "TILT");
+    return -1;
+}
+
 struct RandomScanState {
     float target_pan_deg;
     float target_tilt_deg;
@@ -196,10 +237,10 @@ int main(int argc, char **argv) {
     const char *camera_device = (argc == 3) ? argv[2] : "/dev/video0";
     const char *inference_frame_file = "live_frame.jpg";
 
-    const unsigned int pan_pwm_chip = 1;
-    const unsigned int pan_pwm_channel = 5;
-    const unsigned int tilt_pwm_chip = 1;
-    const unsigned int tilt_pwm_channel = 4;
+    const unsigned int pan_pwm_chip = read_env_u32("PAN_PWM_CHIP", 1);
+    const unsigned int pan_pwm_channel = read_env_u32("PAN_PWM_CHANNEL", 5);
+    const unsigned int tilt_pwm_chip = read_env_u32("TILT_PWM_CHIP", 1);
+    const unsigned int tilt_pwm_channel = read_env_u32("TILT_PWM_CHANNEL", 4);
 
     const char *mosfet_gpiochip_path = "/dev/gpiochip0";
     const unsigned int pan_power_gpio_line = 32;
@@ -254,8 +295,19 @@ int main(int argc, char **argv) {
 
     struct ServoPwm pan_pwm = {0};
     struct ServoPwm tilt_pwm = {0};
-    if (servo_pwm_open(&pan_pwm, pan_pwm_chip, pan_pwm_channel) < 0 ||
-        servo_pwm_open(&tilt_pwm, tilt_pwm_chip, tilt_pwm_channel) < 0 ||
+    const struct PwmCandidate pan_candidates[] = {
+        {pan_pwm_chip, pan_pwm_channel},
+        {1, 5}, {1, 4}, {0, 0}, {0, 1}, {2, 0}, {2, 1},
+    };
+    const struct PwmCandidate tilt_candidates[] = {
+        {tilt_pwm_chip, tilt_pwm_channel},
+        {1, 4}, {1, 5}, {0, 1}, {0, 0}, {2, 1}, {2, 0},
+    };
+
+    if (open_servo_with_fallback(&pan_pwm, "pan", pan_candidates,
+                                 (int)(sizeof(pan_candidates) / sizeof(pan_candidates[0]))) < 0 ||
+        open_servo_with_fallback(&tilt_pwm, "tilt", tilt_candidates,
+                                 (int)(sizeof(tilt_candidates) / sizeof(tilt_candidates[0]))) < 0 ||
         servo_pwm_set_angle(&pan_pwm, 0.0f) < 0 ||
         servo_pwm_set_angle(&tilt_pwm, 0.0f) < 0 ||
         servo_pwm_enable(&pan_pwm) < 0 ||
