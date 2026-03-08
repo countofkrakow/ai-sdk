@@ -39,13 +39,16 @@ $(TARGET): $(SRCS)
 all:$(TARGET) install
 
 install: $(TARGET)
-	@install -d $(INSTALL_DIR)/usr/bin
+	@mkdir -p $(INSTALL_DIR)/usr/bin
 	@install -m 0755 $(TARGET) $(INSTALL_DIR)/usr/bin/$(TARGET)
-	@install -d $(INSTALL_DIR)/etc/npu
+	@mkdir -p $(INSTALL_DIR)/etc/npu
 	@[ -d $(INSTALL_DIR)/etc/npu/yolov5 ] || [ ! -e $(INSTALL_DIR)/etc/npu/yolov5 ] || rm -f $(INSTALL_DIR)/etc/npu/yolov5
-	@install -d $(INSTALL_DIR)/etc/npu/yolov5/model
+	@mkdir -p $(INSTALL_DIR)/etc/npu/yolov5
+	@[ -d $(INSTALL_DIR)/etc/npu/yolov5/model ] || [ ! -e $(INSTALL_DIR)/etc/npu/yolov5/model ] || rm -f $(INSTALL_DIR)/etc/npu/yolov5/model
+	@mkdir -p $(INSTALL_DIR)/etc/npu/yolov5/model
 	@cp -f model/$(NPU_VERSION)/* $(INSTALL_DIR)/etc/npu/yolov5/model
-	@install -d $(INSTALL_DIR)/etc/npu/yolov5/input_data
+	@[ -d $(INSTALL_DIR)/etc/npu/yolov5/input_data ] || [ ! -e $(INSTALL_DIR)/etc/npu/yolov5/input_data ] || rm -f $(INSTALL_DIR)/etc/npu/yolov5/input_data
+	@mkdir -p $(INSTALL_DIR)/etc/npu/yolov5/input_data
 	@cp -f input_data/* $(INSTALL_DIR)/etc/npu/yolov5/input_data
 
 clean:
