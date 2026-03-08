@@ -42,7 +42,6 @@ install: $(TARGET)
 	-@mkdir -p $(INSTALL_PREFIX_NORM)/usr/bin
 	@install -m 0755 $(TARGET) $(INSTALL_PREFIX_NORM)/usr/bin/$(TARGET)
 	-@mkdir -p $(INSTALL_PREFIX_NORM)/etc/npu/yolov5
-	@install -m 0755 $(TARGET) $(INSTALL_PREFIX_NORM)/etc/npu/yolov5/$(TARGET)
 	-@mkdir -p $(INSTALL_PREFIX_NORM)/etc/npu/yolov5/model
 	@cp -f model/$(NPU_VERSION)/* $(INSTALL_PREFIX_NORM)/etc/npu/yolov5/model
 	-@mkdir -p $(INSTALL_PREFIX_NORM)/etc/npu/yolov5/input_data
