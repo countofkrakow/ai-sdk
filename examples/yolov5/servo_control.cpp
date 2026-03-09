@@ -34,14 +34,6 @@ int servo_pwm_open(struct ServoPwm *servo_pwm, unsigned int chip, unsigned int c
         return -1;
     }
 
-    if (pwm_set_polarity(servo_pwm->handle, PWM_POLARITY_NORMAL) < 0) {
-        fprintf(stderr, "pwm_set_polarity failed for chip=%u channel=%u\n", chip, channel);
-        pwm_close(servo_pwm->handle);
-        pwm_free(servo_pwm->handle);
-        servo_pwm->handle = NULL;
-        return -1;
-    }
-
     if (pwm_set_duty_cycle(servo_pwm->handle, SERVO_PWM_CENTER_DUTY_CYCLE) < 0) {
         fprintf(stderr, "pwm_set_duty_cycle failed for chip=%u channel=%u\n", chip, channel);
         pwm_close(servo_pwm->handle);
