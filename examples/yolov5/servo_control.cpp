@@ -2,6 +2,9 @@
 
 #include <stdio.h>
 
+static const double SERVO_PWM_FREQUENCY_HZ = 50.0;
+static const unsigned long long SERVO_PWM_CENTER_PULSE_NS = 1500000ULL;
+
 static float clampf_local(float value, float min_v, float max_v) {
     return (value < min_v) ? min_v : ((value > max_v) ? max_v : value);
 }
@@ -23,8 +26,24 @@ int servo_pwm_open(struct ServoPwm *servo_pwm, unsigned int chip, unsigned int c
         return -1;
     }
 
-    if (pwm_set_period_ns(servo_pwm->handle, 20000000ULL) < 0) {
-        fprintf(stderr, "pwm_set_period_ns failed for chip=%u channel=%u\n", chip, channel);
+    if (pwm_set_frequency(servo_pwm->handle, SERVO_PWM_FREQUENCY_HZ) < 0) {
+        fprintf(stderr, "pwm_set_frequency failed for chip=%u channel=%u\n", chip, channel);
+        pwm_close(servo_pwm->handle);
+        pwm_free(servo_pwm->handle);
+        servo_pwm->handle = NULL;
+        return -1;
+    }
+
+    if (pwm_set_polarity(servo_pwm->handle, PWM_POLARITY_NORMAL) < 0) {
+        fprintf(stderr, "pwm_set_polarity failed for chip=%u channel=%u\n", chip, channel);
+        pwm_close(servo_pwm->handle);
+        pwm_free(servo_pwm->handle);
+        servo_pwm->handle = NULL;
+        return -1;
+    }
+
+    if (pwm_set_duty_cycle_ns(servo_pwm->handle, SERVO_PWM_CENTER_PULSE_NS) < 0) {
+        fprintf(stderr, "pwm_set_duty_cycle_ns failed for chip=%u channel=%u\n", chip, channel);
         pwm_close(servo_pwm->handle);
         pwm_free(servo_pwm->handle);
         servo_pwm->handle = NULL;
