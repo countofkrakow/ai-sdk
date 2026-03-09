@@ -88,7 +88,7 @@ A compact transport struct containing whether cat was found plus bbox + confiden
 
 - Servo power lines controlled through GPIO (explicit open/close lifecycle).
 - Laser GPIO can be gated off during selected calm windows/conditions.
-- Startup laser alignment sequence for sanity-checking orientation and travel.
+- Startup laser alignment sequence for sanity-checking orientation and travel, followed by an explicit recenter to neutral pan/tilt before control loop start.
 - Laser-dot stabilization holds recent position through short detection dropouts.
 - Cat track filter includes smoothing and brief identity lock behavior to reduce rapid target switching.
 
