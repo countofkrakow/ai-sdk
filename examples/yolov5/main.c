@@ -199,9 +199,9 @@ int main(int argc, char **argv) {
     const char *inference_frame_file = "live_frame.jpg";
 
     const unsigned int pan_pwm_chip = 1;
-    const unsigned int pan_pwm_channel = 5;
+    const unsigned int pan_pwm_channel = 1;
     const unsigned int tilt_pwm_chip = 1;
-    const unsigned int tilt_pwm_channel = 4;
+    const unsigned int tilt_pwm_channel = 2;
 
     const char *mosfet_gpiochip_path = "/dev/gpiochip0";
     const unsigned int pan_power_gpio_line = 32;
