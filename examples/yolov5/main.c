@@ -15,7 +15,6 @@
 #include <time.h>
 #include <pthread.h>
 #include <string.h>
-#include <dirent.h>
 
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
@@ -49,122 +48,6 @@ struct InferenceThreadArgs {
     struct InferenceShared *shared;
 };
 
-
-struct PwmCandidate {
-    unsigned int chip;
-    unsigned int channel;
-};
-
-static unsigned int read_env_u32(const char *name, unsigned int default_value) {
-    const char *v = getenv(name);
-    if (v == NULL || *v == '\0') {
-        return default_value;
-    }
-
-    char *end = NULL;
-    unsigned long parsed = strtoul(v, &end, 10);
-    if (end == v || *end != '\0') {
-        fprintf(stderr, "Ignoring invalid %s=%s (expected unsigned integer)\n", name, v);
-        return default_value;
-    }
-
-    return (unsigned int)parsed;
-}
-
-
-static int append_candidate_unique(struct PwmCandidate *out,
-                                   int *count,
-                                   int max_count,
-                                   unsigned int chip,
-                                   unsigned int channel) {
-    for (int i = 0; i < *count; ++i) {
-        if (out[i].chip == chip && out[i].channel == channel) {
-            return 0;
-        }
-    }
-    if (*count >= max_count) {
-        return -1;
-    }
-    out[*count].chip = chip;
-    out[*count].channel = channel;
-    (*count)++;
-    return 1;
-}
-
-static void append_sysfs_pwm_candidates(struct PwmCandidate *out,
-                                        int *count,
-                                        int max_count) {
-    DIR *dir = opendir("/sys/class/pwm");
-    if (dir == NULL) {
-        return;
-    }
-
-    struct dirent *entry = NULL;
-    while ((entry = readdir(dir)) != NULL) {
-        if (strncmp(entry->d_name, "pwmchip", 7) != 0) {
-            continue;
-        }
-
-        char *end = NULL;
-        unsigned long chip_ul = strtoul(entry->d_name + 7, &end, 10);
-        if (end == entry->d_name + 7 || *end != '\0') {
-            continue;
-        }
-
-        char npwm_path[256];
-        snprintf(npwm_path, sizeof(npwm_path), "/sys/class/pwm/%s/npwm", entry->d_name);
-        FILE *f = fopen(npwm_path, "r");
-        if (f == NULL) {
-            continue;
-        }
-
-        int npwm = 0;
-        if (fscanf(f, "%d", &npwm) != 1 || npwm <= 0) {
-            fclose(f);
-            continue;
-        }
-        fclose(f);
-
-        if (npwm > 32) npwm = 32;
-        for (int ch = 0; ch < npwm; ++ch) {
-            if (append_candidate_unique(out, count, max_count, (unsigned int)chip_ul, (unsigned int)ch) < 0) {
-                closedir(dir);
-                return;
-            }
-        }
-    }
-
-    closedir(dir);
-}
-
-static int open_servo_with_fallback(struct ServoPwm *servo_pwm,
-                                    const char *label,
-                                    const struct PwmCandidate *candidates,
-                                    int candidate_count,
-                                    float initial_angle_deg) {
-    for (int i = 0; i < candidate_count; ++i) {
-        if (servo_pwm_open(servo_pwm, candidates[i].chip, candidates[i].channel) < 0) {
-            continue;
-        }
-
-        // Candidate is only accepted when full bring-up succeeds.
-        if (servo_pwm_set_angle(servo_pwm, initial_angle_deg) < 0 ||
-            servo_pwm_enable(servo_pwm) < 0) {
-            servo_pwm_close(servo_pwm);
-            continue;
-        }
-
-        fprintf(stderr, "Using %s PWM chip=%u channel=%u\n", label, candidates[i].chip, candidates[i].channel);
-        return 0;
-    }
-
-    fprintf(stderr,
-            "Failed to initialize any %s PWM candidate. Set %s_PWM_CHIP and %s_PWM_CHANNEL for your board.\n",
-            label,
-            (strcmp(label, "pan") == 0) ? "PAN" : "TILT",
-            (strcmp(label, "pan") == 0) ? "PAN" : "TILT");
-    return -1;
-}
 
 
 struct RandomScanState {
@@ -315,10 +198,10 @@ int main(int argc, char **argv) {
     const char *camera_device = (argc == 3) ? argv[2] : "/dev/video0";
     const char *inference_frame_file = "live_frame.jpg";
 
-    const unsigned int pan_pwm_chip = read_env_u32("PAN_PWM_CHIP", 0);
-    const unsigned int pan_pwm_channel = read_env_u32("PAN_PWM_CHANNEL", 1);
-    const unsigned int tilt_pwm_chip = read_env_u32("TILT_PWM_CHIP", 0);
-    const unsigned int tilt_pwm_channel = read_env_u32("TILT_PWM_CHANNEL", 0);
+    const unsigned int pan_pwm_chip = 1;
+    const unsigned int pan_pwm_channel = 5;
+    const unsigned int tilt_pwm_chip = 1;
+    const unsigned int tilt_pwm_channel = 4;
 
     const char *mosfet_gpiochip_path = "/dev/gpiochip0";
     const unsigned int pan_power_gpio_line = 32;
@@ -373,45 +256,12 @@ int main(int argc, char **argv) {
 
     struct ServoPwm pan_pwm = {0};
     struct ServoPwm tilt_pwm = {0};
-    struct PwmCandidate pan_candidates[64] = {0};
-    struct PwmCandidate tilt_candidates[64] = {0};
-    int pan_candidate_count = 0;
-    int tilt_candidate_count = 0;
-
-    append_candidate_unique(pan_candidates, &pan_candidate_count, 64, pan_pwm_chip, pan_pwm_channel);
-    append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, tilt_pwm_chip, tilt_pwm_channel);
-
-    // A7Z doc-style mapping often uses channel == header pin number for PWM1-x
-    // (e.g. PWM1-2 -> channel 10), so prioritize those candidates first.
-    append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 1, 10); // PWM1-2 / pin 10
-    append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 1, 12); // PWM1-4 / pin 12
-    append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 1, 13); // PWM1-5 / pin 13
-    append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 1, 2);
-    append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 1, 1);
-    append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 1, 5);
-    append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 1, 4);
-    append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 0, 0);
-    append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 0, 1);
-    append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 2, 0);
-    append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 2, 1);
-
-    append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, 1, 12); // PWM1-4 / pin 12
-    append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, 1, 13); // PWM1-5 / pin 13
-    append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, 1, 10); // PWM1-2 / pin 10
-    append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, 1, 1);
-    append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, 1, 2);
-    append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, 1, 4);
-    append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, 1, 5);
-    append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, 0, 1);
-    append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, 0, 0);
-    append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, 2, 1);
-    append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, 2, 0);
-
-    append_sysfs_pwm_candidates(pan_candidates, &pan_candidate_count, 64);
-    append_sysfs_pwm_candidates(tilt_candidates, &tilt_candidate_count, 64);
-
-    if (open_servo_with_fallback(&pan_pwm, "pan", pan_candidates, pan_candidate_count, 0.0f) < 0 ||
-        open_servo_with_fallback(&tilt_pwm, "tilt", tilt_candidates, tilt_candidate_count, 0.0f) < 0) {
+    if (servo_pwm_open(&pan_pwm, pan_pwm_chip, pan_pwm_channel) < 0 ||
+        servo_pwm_open(&tilt_pwm, tilt_pwm_chip, tilt_pwm_channel) < 0 ||
+        servo_pwm_set_angle(&pan_pwm, 0.0f) < 0 ||
+        servo_pwm_set_angle(&tilt_pwm, 0.0f) < 0 ||
+        servo_pwm_enable(&pan_pwm) < 0 ||
+        servo_pwm_enable(&tilt_pwm) < 0) {
         mosfet_gpio_close(&pan_power_gpio);
         mosfet_gpio_close(&tilt_power_gpio);
         mosfet_gpio_close(&laser_gpio);

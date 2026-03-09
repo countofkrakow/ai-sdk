@@ -99,22 +99,7 @@ Examples include HSV ranges, binary thresholding, area/circularity gates, and re
 
 So currently there is **no external config file or CLI/env tuning surface** for those thresholds in this demo.
 
-## 7) PWM pin mapping overrides (runtime)
-
-Servo PWM mapping can vary by board image/kernel. The demo now supports env overrides:
-
-- `PAN_PWM_CHIP` (default `0`)
-- `PAN_PWM_CHANNEL` (default `1`)
-- `TILT_PWM_CHIP` (default `0`)
-- `TILT_PWM_CHANNEL` (default `0`)
-
-If defaults fail, startup tries a fallback candidate list and scans `/sys/class/pwm/*/npwm` to probe available chips/channels. A candidate is accepted only if open + initial angle set + enable all succeed, then the selected mapping is logged.
-
-Note: board docs often mention **GPIO pin numbers** (e.g. pin `10`) for PWM-capable pins. Those are not the same as Linux PWM `channel` indices used by this demo (`pwmchipX` + `channel`).
-
-For A7Z-style docs that map PWM1-x to header pin numbers, common candidates are `pwmchip1` channel `10` for PWM1-2, channel `12` for PWM1-4, and channel `13` for PWM1-5 (the fallback probing now prioritizes these).
-
-## 8) Typical control tick (conceptual)
+## 7) Typical control tick (conceptual)
 
 1. Grab frame from camera.
 2. Push latest frame for worker inference (non-blocking producer style).
@@ -125,7 +110,7 @@ For A7Z-style docs that map PWM1-x to header pin numbers, common candidates are 
 7. Apply laser on/off policy and safety checks.
 8. Repeat.
 
-## 9) Known limitations / next logical improvements
+## 8) Known limitations / next logical improvements
 
 - Add true multi-object tracking (ID association) instead of stickiness-only lock.
 - Expose laser CV thresholds as runtime tunables (env/config CLI).
