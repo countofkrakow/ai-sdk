@@ -99,7 +99,14 @@ Examples include HSV ranges, binary thresholding, area/circularity gates, and re
 
 So currently there is **no external config file or CLI/env tuning surface** for those thresholds in this demo.
 
-## 7) Typical control tick (conceptual)
+## 7) PWM mapping for A7Z overlays
+
+Current defaults in `main.c` are aligned to the A7Z overlay naming:
+
+- pan: PWM1-1 (`chip=1`, `channel=1`)
+- tilt: PWM1-2 (`chip=1`, `channel=2`)
+
+## 8) Typical control tick (conceptual)
 
 1. Grab frame from camera.
 2. Push latest frame for worker inference (non-blocking producer style).
@@ -110,7 +117,7 @@ So currently there is **no external config file or CLI/env tuning surface** for 
 7. Apply laser on/off policy and safety checks.
 8. Repeat.
 
-## 8) Known limitations / next logical improvements
+## 9) Known limitations / next logical improvements
 
 - Add true multi-object tracking (ID association) instead of stickiness-only lock.
 - Expose laser CV thresholds as runtime tunables (env/config CLI).
