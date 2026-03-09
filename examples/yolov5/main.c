@@ -381,6 +381,8 @@ int main(int argc, char **argv) {
     append_candidate_unique(pan_candidates, &pan_candidate_count, 64, pan_pwm_chip, pan_pwm_channel);
     append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, tilt_pwm_chip, tilt_pwm_channel);
 
+    append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 1, 2);
+    append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 1, 1);
     append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 1, 5);
     append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 1, 4);
     append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 0, 0);
@@ -388,6 +390,8 @@ int main(int argc, char **argv) {
     append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 2, 0);
     append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 2, 1);
 
+    append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, 1, 1);
+    append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, 1, 2);
     append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, 1, 4);
     append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, 1, 5);
     append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, 0, 1);
