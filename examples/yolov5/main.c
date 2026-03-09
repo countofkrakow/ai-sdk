@@ -275,6 +275,21 @@ int main(int argc, char **argv) {
 
     run_laser_alignment_sequence(&pan_pwm, &tilt_pwm, &laser_gpio);
 
+    // Start control operation from a known neutral pose.
+    if (servo_pwm_set_angle(&pan_pwm, 0.0f) < 0 ||
+        servo_pwm_set_angle(&tilt_pwm, 0.0f) < 0) {
+        mosfet_gpio_close(&pan_power_gpio);
+        mosfet_gpio_close(&tilt_power_gpio);
+        mosfet_gpio_close(&laser_gpio);
+        servo_pwm_close(&pan_pwm);
+        servo_pwm_close(&tilt_pwm);
+        awnn_destroy(context);
+        awnn_uninit();
+        camera.release();
+        return -1;
+    }
+    usleep(150000);
+
     struct InferenceShared inference_shared;
     pthread_mutex_init(&inference_shared.mutex, NULL);
     pthread_cond_init(&inference_shared.cond, NULL);
