@@ -329,7 +329,7 @@ int main(int argc, char **argv) {
             mosfet_gpiochip_path, laser_gpio_line);
     if (mosfet_gpio_set(&pan_power_gpio, true) < 0 ||
         mosfet_gpio_set(&tilt_power_gpio, true) < 0 ||
-        mosfet_gpio_set(&laser_gpio, false) < 0) {
+        mosfet_gpio_set(&laser_gpio, true) < 0) {
         mosfet_gpio_close(&pan_power_gpio);
         mosfet_gpio_close(&tilt_power_gpio);
         mosfet_gpio_close(&laser_gpio);
@@ -362,7 +362,7 @@ int main(int argc, char **argv) {
         return -1;
     }
 
-    // Bare-minimum startup: center servos and keep laser OFF until active tracking.
+    // Bare-minimum startup: center servos and keep laser ON during runtime.
     if (servo_pwm_set_angle(&pan_pwm, 0.0f) < 0 ||
         servo_pwm_set_angle(&tilt_pwm, 0.0f) < 0) {
         mosfet_gpio_close(&pan_power_gpio);
@@ -404,6 +404,8 @@ int main(int argc, char **argv) {
 
     ServoState servo_state = {0.0f, 0.0f};
     CatTrackFilterState track_filter = {0};
+    struct RandomScanState random_scan_state = {0};
+    retarget_random_scan(&random_scan_state);
 
     // Deadman: if camera stream stalls, center servos and cut power.
     time_t last_frame_time = time(NULL);
@@ -436,8 +438,8 @@ int main(int argc, char **argv) {
                 usleep(100000);
                 continue;
             }
-            // Keep laser OFF on recovery; normal loop policy controls it afterwards.
-            mosfet_gpio_set(&laser_gpio, false);
+            // Keep laser ON during normal runtime after recovery.
+            mosfet_gpio_set(&laser_gpio, true);
             servo_rails_powered = 1;
             deadman_active = 0;
             fprintf(stderr, "Deadman cleared: camera recovered, servo rails re-enabled.\n");
@@ -485,13 +487,16 @@ int main(int argc, char **argv) {
                     smoothed.confidence, cat_center.x, cat_center.y,
                     servo_state.pan_deg, servo_state.tilt_deg);
         } else {
-            servo_state.pan_deg = 0.0f;
-            servo_state.tilt_deg = 0.0f;
+            update_random_scan_servo(&servo_state, &random_scan_state, control_dt_sec);
             servo_pwm_set_angle(&pan_pwm, servo_state.pan_deg);
             servo_pwm_set_angle(&tilt_pwm, servo_state.tilt_deg);
-            mosfet_gpio_set(&laser_gpio, false);
-            laser_pwm_tick = 0;
-            fprintf(stderr, "No cat%s; holding center servo=(%.2f,%.2f)\n",
+
+            // Keep laser visible during runtime even when no cat is detected.
+            const int laser_on_this_tick = (laser_pwm_on_ticks > 0) &&
+                (laser_pwm_tick < laser_pwm_on_ticks);
+            mosfet_gpio_set(&laser_gpio, laser_on_this_tick);
+            laser_pwm_tick = (laser_pwm_tick + 1) % laser_pwm_cycle_ticks;
+            fprintf(stderr, "No cat%s; random sweep servo=(%.2f,%.2f)\n",
                     inference_running ? " (inference busy)" : "",
                     servo_state.pan_deg, servo_state.tilt_deg);
         }
@@ -514,6 +519,7 @@ int main(int argc, char **argv) {
 
     awnn_destroy(context);
     awnn_uninit();
+    mosfet_gpio_set(&laser_gpio, false);
     mosfet_gpio_close(&pan_power_gpio);
     mosfet_gpio_close(&tilt_power_gpio);
     mosfet_gpio_close(&laser_gpio);
