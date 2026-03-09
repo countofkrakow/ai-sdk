@@ -15,6 +15,7 @@
 #include <time.h>
 #include <pthread.h>
 #include <string.h>
+#include <errno.h>
 #include <dirent.h>
 
 #include <opencv2/core.hpp>
@@ -221,18 +222,58 @@ static void *inference_thread_main(void *arg) {
     return NULL;
 }
 
+static int parse_brightness_percent(const char *arg, unsigned int *brightness_percent) {
+    if (arg == NULL || brightness_percent == NULL) {
+        return -1;
+    }
+
+    errno = 0;
+    char *end = NULL;
+    unsigned long parsed = strtoul(arg, &end, 10);
+    if (errno != 0 || end == arg || *end != '\0' || parsed > 100UL) {
+        return -1;
+    }
+
+    *brightness_percent = (unsigned int)parsed;
+    return 0;
+}
+
 int main(int argc, char **argv) {
-    if (argc < 2 || argc > 3) {
+    if (argc < 2 || argc > 4) {
         fprintf(stderr,
-                "Usage: %s <nbg> [camera_device]\n"
+                "Usage: %s <nbg> [camera_device] [laser_brightness_percent]\n"
                 "  nbg: path to YOLOv5 .nb model\n"
-                "  camera_device: optional V4L2 node (default: /dev/video0)\n",
+                "  camera_device: optional V4L2 node (default: /dev/video0)\n"
+                "  laser_brightness_percent: optional integer 0..100 (default: 100)\n",
                 argv[0]);
         return -1;
     }
 
     const char *nbg = argv[1];
-    const char *camera_device = (argc == 3) ? argv[2] : "/dev/video0";
+    const char *camera_device = "/dev/video0";
+    unsigned int laser_brightness_percent = 100;
+
+    if (argc >= 3) {
+        // Backward compatible: allow ./yolov5 <nbg> <brightness> or <camera>.
+        if (parse_brightness_percent(argv[2], &laser_brightness_percent) != 0) {
+            camera_device = argv[2];
+        }
+    }
+    if (argc >= 4 && parse_brightness_percent(argv[3], &laser_brightness_percent) != 0) {
+        fprintf(stderr,
+                "Invalid laser_brightness_percent '%s'. Expected integer 0..100.\n",
+                argv[3]);
+        return -1;
+    }
+
+    const unsigned int laser_pwm_cycle_ticks = 10;
+    unsigned int laser_pwm_tick = 0;
+    const unsigned int laser_pwm_on_ticks =
+        (laser_brightness_percent * laser_pwm_cycle_ticks) / 100;
+
+    fprintf(stderr,
+            "Runtime config: camera=%s laser_brightness=%u%%\n",
+            camera_device, laser_brightness_percent);
     const char *inference_frame_file = "live_frame.jpg";
 
     const unsigned int pan_pwm_chip = 10;
@@ -288,7 +329,7 @@ int main(int argc, char **argv) {
             mosfet_gpiochip_path, laser_gpio_line);
     if (mosfet_gpio_set(&pan_power_gpio, true) < 0 ||
         mosfet_gpio_set(&tilt_power_gpio, true) < 0 ||
-        mosfet_gpio_set(&laser_gpio, true) < 0) {
+        mosfet_gpio_set(&laser_gpio, false) < 0) {
         mosfet_gpio_close(&pan_power_gpio);
         mosfet_gpio_close(&tilt_power_gpio);
         mosfet_gpio_close(&laser_gpio);
@@ -321,7 +362,7 @@ int main(int argc, char **argv) {
         return -1;
     }
 
-    // Bare-minimum startup: center servos and keep laser ON when rails are up.
+    // Bare-minimum startup: center servos and keep laser OFF until active tracking.
     if (servo_pwm_set_angle(&pan_pwm, 0.0f) < 0 ||
         servo_pwm_set_angle(&tilt_pwm, 0.0f) < 0) {
         mosfet_gpio_close(&pan_power_gpio);
@@ -432,7 +473,13 @@ int main(int argc, char **argv) {
             update_servo_state(&servo_state, frame_center, cat_center, frame.cols, frame.rows);
             servo_pwm_set_angle(&pan_pwm, servo_state.pan_deg);
             servo_pwm_set_angle(&tilt_pwm, servo_state.tilt_deg);
-            mosfet_gpio_set(&laser_gpio, true);
+
+            // Software PWM for brightness while operating on a detected cat.
+            const int laser_on_this_tick = (laser_pwm_on_ticks > 0) &&
+                (laser_pwm_tick < laser_pwm_on_ticks);
+            mosfet_gpio_set(&laser_gpio, laser_on_this_tick);
+            laser_pwm_tick = (laser_pwm_tick + 1) % laser_pwm_cycle_ticks;
+
             fprintf(stderr,
                     "cat_conf=%.2f target=(%.1f,%.1f) servo=(%.2f,%.2f)\n",
                     smoothed.confidence, cat_center.x, cat_center.y,
@@ -442,7 +489,8 @@ int main(int argc, char **argv) {
             servo_state.tilt_deg = 0.0f;
             servo_pwm_set_angle(&pan_pwm, servo_state.pan_deg);
             servo_pwm_set_angle(&tilt_pwm, servo_state.tilt_deg);
-            mosfet_gpio_set(&laser_gpio, true);
+            mosfet_gpio_set(&laser_gpio, false);
+            laser_pwm_tick = 0;
             fprintf(stderr, "No cat%s; holding center servo=(%.2f,%.2f)\n",
                     inference_running ? " (inference busy)" : "",
                     servo_state.pan_deg, servo_state.tilt_deg);
