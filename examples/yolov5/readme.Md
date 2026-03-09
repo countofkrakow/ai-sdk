@@ -101,21 +101,20 @@ So currently there is **no external config file or CLI/env tuning surface** for 
 
 ## 7) PWM mapping for A7Z overlays
 
-Current defaults in `main.c` are aligned to the A7Z overlay naming:
+Current defaults in `main.c` are set to:
 
-- pan: PWM1-1 (`chip=1`, `channel=1`)
-- tilt: PWM1-2 (`chip=1`, `channel=2`)
+- pan: `chip=10`, `channel=1`
+- tilt: `chip=10`, `channel=2`
 
 ## 8) Typical control tick (conceptual)
 
 1. Grab frame from camera.
 2. Push latest frame for worker inference (non-blocking producer style).
-3. Detect + stabilize laser dot location from this frame.
-4. Pull latest cat track result (if available) and filter it.
-5. Ask play algorithm for next target point.
-6. Convert target delta to servo angle updates.
-7. Apply laser on/off policy and safety checks.
-8. Repeat.
+3. Pull latest cat track result (if available) and filter it.
+4. If a cat is present, steer servos toward cat bbox center.
+5. If no cat is present, hold servos at center.
+6. Keep laser enabled while rails are powered (deadman may disable on camera stall).
+7. Repeat.
 
 ## 9) Known limitations / next logical improvements
 
@@ -137,3 +136,8 @@ If you are onboarding to this code, start reading in this order:
 ### PWM troubleshooting
 
 If servo init fails at startup (`pwm_open` or `pwm_enable`), the program now logs detected `pwmchip*` devices and each `npwm` value from `/sys/class/pwm`. Use that output to set the correct channel mapping for your board overlay.
+
+
+### Minimal control flow
+
+Servo/laser behavior is intentionally simplified: when a cat is detected, servos move toward cat bbox center; when no cat is detected, servos hold center; laser stays enabled while rails are powered.

@@ -235,9 +235,9 @@ int main(int argc, char **argv) {
     const char *camera_device = (argc == 3) ? argv[2] : "/dev/video0";
     const char *inference_frame_file = "live_frame.jpg";
 
-    const unsigned int pan_pwm_chip = 1;
+    const unsigned int pan_pwm_chip = 10;
     const unsigned int pan_pwm_channel = 1;
-    const unsigned int tilt_pwm_chip = 1;
+    const unsigned int tilt_pwm_chip = 10;
     const unsigned int tilt_pwm_channel = 2;
 
     const char *mosfet_gpiochip_path = "/dev/gpiochip0";
@@ -279,6 +279,13 @@ int main(int argc, char **argv) {
         camera.release();
         return -1;
     }
+    fprintf(stderr,
+            "GPIO mapping: pan_power=%s line %u (A7Z pin 29 / PB0), "
+            "tilt_power=%s line %u (A7Z pin 30 / PB1), "
+            "laser=%s line %u (A7Z pin 31 / PB3).\n",
+            mosfet_gpiochip_path, pan_power_gpio_line,
+            mosfet_gpiochip_path, tilt_power_gpio_line,
+            mosfet_gpiochip_path, laser_gpio_line);
     if (mosfet_gpio_set(&pan_power_gpio, true) < 0 ||
         mosfet_gpio_set(&tilt_power_gpio, true) < 0 ||
         mosfet_gpio_set(&laser_gpio, true) < 0) {
@@ -314,9 +321,7 @@ int main(int argc, char **argv) {
         return -1;
     }
 
-    run_laser_alignment_sequence(&pan_pwm, &tilt_pwm, &laser_gpio);
-
-    // Start control operation from a known neutral pose.
+    // Bare-minimum startup: center servos and keep laser ON when rails are up.
     if (servo_pwm_set_angle(&pan_pwm, 0.0f) < 0 ||
         servo_pwm_set_angle(&tilt_pwm, 0.0f) < 0) {
         mosfet_gpio_close(&pan_power_gpio);
@@ -357,14 +362,7 @@ int main(int argc, char **argv) {
     }
 
     ServoState servo_state = {0.0f, 0.0f};
-    struct RandomScanState random_scan = {0.0f, 0.0f, RANDOM_MIN_SPEED_DEG_PER_SEC, 0};
-    retarget_random_scan(&random_scan);
-
-    struct CatPlayState cat_play_state;
-    init_cat_play_state(&cat_play_state);
-
     CatTrackFilterState track_filter = {0};
-    LaserTrackState laser_track_state = {0};
 
     // Deadman: if camera stream stalls, center servos and cut power.
     time_t last_frame_time = time(NULL);
@@ -372,9 +370,6 @@ int main(int argc, char **argv) {
     int deadman_active = 0;
 
     int printed_resolution = 0;
-    cv::Point2f estimated_laser(0.0f, 0.0f);
-    int frame_index = 0;
-
     while (1) {
         cv::Mat raw_frame;
         if (!camera.read(raw_frame) || raw_frame.empty()) {
@@ -409,17 +404,12 @@ int main(int argc, char **argv) {
 
         if (!printed_resolution) {
             printed_resolution = 1;
-            estimated_laser = cv::Point2f((float)raw_frame.cols * 0.5f, (float)raw_frame.rows * 0.5f);
         }
 
         cv::Mat frame = raw_frame;
         if (frame.channels() == 4) cv::cvtColor(frame, frame, cv::COLOR_BGRA2BGR);
         else if (frame.channels() == 1) cv::cvtColor(frame, frame, cv::COLOR_GRAY2BGR);
         if (frame.channels() != input_channels) continue;
-
-        LaserDotObservation laser_raw = detect_laser_dot(frame);
-        LaserDotObservation laser_obs = stabilize_laser_observation(&laser_track_state, laser_raw);
-        if (laser_obs.detected) estimated_laser = laser_obs.center;
 
         last_frame_time = time(NULL);
 
@@ -436,35 +426,24 @@ int main(int argc, char **argv) {
         Yolov5CatTrackInfo smoothed = filter_cat_track(&track_filter, (has_track_info ? &raw_track : NULL));
 
         if (smoothed.has_cat) {
-            const char *algo_name = "oval";
-            cv::Point2f play_target = build_cat_play_target(
-                &cat_play_state,
-                smoothed,
-                estimated_laser,
-                frame_index,
-                frame.cols,
-                frame.rows,
-                control_dt_sec,
-                &algo_name);
-            update_servo_state(&servo_state, estimated_laser, play_target, frame.cols, frame.rows);
+            cv::Point2f frame_center((float)frame.cols * 0.5f, (float)frame.rows * 0.5f);
+            cv::Point2f cat_center(smoothed.x + smoothed.width * 0.5f,
+                                   smoothed.y + smoothed.height * 0.5f);
+            update_servo_state(&servo_state, frame_center, cat_center, frame.cols, frame.rows);
             servo_pwm_set_angle(&pan_pwm, servo_state.pan_deg);
             servo_pwm_set_angle(&tilt_pwm, servo_state.tilt_deg);
-
-            // Keep laser off during calm-pause windows to reduce overstimulation.
-            mosfet_gpio_set(&laser_gpio, (strcmp(algo_name, "calm_pause") != 0));
-
+            mosfet_gpio_set(&laser_gpio, true);
             fprintf(stderr,
-                    "cat_conf=%.2f algo=%s laser=(%.1f,%.1f) target=(%.1f,%.1f) servo=(%.2f,%.2f)\n",
-                    smoothed.confidence, algo_name,
-                    estimated_laser.x, estimated_laser.y,
-                    play_target.x, play_target.y,
+                    "cat_conf=%.2f target=(%.1f,%.1f) servo=(%.2f,%.2f)\n",
+                    smoothed.confidence, cat_center.x, cat_center.y,
                     servo_state.pan_deg, servo_state.tilt_deg);
         } else {
-            update_random_scan_servo(&servo_state, &random_scan, control_dt_sec);
+            servo_state.pan_deg = 0.0f;
+            servo_state.tilt_deg = 0.0f;
             servo_pwm_set_angle(&pan_pwm, servo_state.pan_deg);
-            mosfet_gpio_set(&laser_gpio, true);
             servo_pwm_set_angle(&tilt_pwm, servo_state.tilt_deg);
-            fprintf(stderr, "No cat%s; random scan servo=(%.2f,%.2f)\n",
+            mosfet_gpio_set(&laser_gpio, true);
+            fprintf(stderr, "No cat%s; holding center servo=(%.2f,%.2f)\n",
                     inference_running ? " (inference busy)" : "",
                     servo_state.pan_deg, servo_state.tilt_deg);
         }
@@ -472,7 +451,6 @@ int main(int argc, char **argv) {
         cv::Mat detection = cv::imread("result.png");
         if (!detection.empty()) cv::imshow("YOLOv5 Live Detection", detection);
 
-        frame_index++;
         int key = cv::waitKey(1);
         if (key == 'q' || key == 'Q' || key == 27) break;
         usleep(30000);
