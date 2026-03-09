@@ -132,3 +132,8 @@ If you are onboarding to this code, start reading in this order:
 3. `play_algorithms.*`
 4. `servo_control.*`
 5. `yolov5_post_process.*`
+
+
+### PWM troubleshooting
+
+If servo init fails at startup (`pwm_open` or `pwm_enable`), the program now logs detected `pwmchip*` devices and each `npwm` value from `/sys/class/pwm`. Use that output to set the correct channel mapping for your board overlay.
