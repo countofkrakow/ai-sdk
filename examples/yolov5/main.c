@@ -15,6 +15,7 @@
 #include <time.h>
 #include <pthread.h>
 #include <string.h>
+#include <dirent.h>
 
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
@@ -48,6 +49,42 @@ struct InferenceThreadArgs {
     struct InferenceShared *shared;
 };
 
+
+
+
+static void print_pwm_sysfs_overview(void) {
+    DIR *dir = opendir("/sys/class/pwm");
+    if (dir == NULL) {
+        fprintf(stderr, "PWM debug: /sys/class/pwm is unavailable on this system.\n");
+        return;
+    }
+
+    fprintf(stderr, "PWM debug: discovered pwmchips in /sys/class/pwm:\n");
+    struct dirent *entry = NULL;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strncmp(entry->d_name, "pwmchip", 7) != 0) {
+            continue;
+        }
+
+        char npwm_path[256];
+        snprintf(npwm_path, sizeof(npwm_path), "/sys/class/pwm/%s/npwm", entry->d_name);
+        FILE *f = fopen(npwm_path, "r");
+        int npwm = -1;
+        if (f != NULL) {
+            if (fscanf(f, "%d", &npwm) != 1) {
+                npwm = -1;
+            }
+            fclose(f);
+        }
+
+        fprintf(stderr, "  - %s (npwm=%d)\n", entry->d_name, npwm);
+    }
+    closedir(dir);
+
+    fprintf(stderr,
+            "PWM debug: verify overlays are loaded and map PAN/TILT to valid channel indices.\n"
+            "           example overlays: sun60iw2p1-pwm1-1 and sun60iw2p1-pwm1-2.\n");
+}
 
 
 struct RandomScanState {
@@ -262,6 +299,10 @@ int main(int argc, char **argv) {
         servo_pwm_set_angle(&tilt_pwm, 0.0f) < 0 ||
         servo_pwm_enable(&pan_pwm) < 0 ||
         servo_pwm_enable(&tilt_pwm) < 0) {
+        fprintf(stderr,
+                "Servo init failed for configured PAN(chip=%u,channel=%u) TILT(chip=%u,channel=%u).\n",
+                pan_pwm_chip, pan_pwm_channel, tilt_pwm_chip, tilt_pwm_channel);
+        print_pwm_sysfs_overview();
         mosfet_gpio_close(&pan_power_gpio);
         mosfet_gpio_close(&tilt_power_gpio);
         mosfet_gpio_close(&laser_gpio);
