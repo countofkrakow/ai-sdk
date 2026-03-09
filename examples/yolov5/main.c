@@ -273,6 +273,29 @@ static void run_laser_circle_test(struct ServoPwm *pan_pwm,
     fprintf(stderr, "--test mode stopped; laser OFF and servos centered.\n");
 }
 
+
+
+static int enable_servo_rails_with_stagger(struct MosfetPowerGpio *pan_power_gpio,
+                                           struct MosfetPowerGpio *tilt_power_gpio) {
+    const useconds_t rail_stagger_delay_us = 125000;
+    if (mosfet_gpio_set(pan_power_gpio, true) < 0) {
+        return -1;
+    }
+    usleep(rail_stagger_delay_us);
+    if (mosfet_gpio_set(tilt_power_gpio, true) < 0) {
+        mosfet_gpio_set(pan_power_gpio, false);
+        return -1;
+    }
+    usleep(rail_stagger_delay_us);
+    return 0;
+}
+
+static void disable_servo_rails(struct MosfetPowerGpio *pan_power_gpio,
+                                struct MosfetPowerGpio *tilt_power_gpio) {
+    mosfet_gpio_set(pan_power_gpio, false);
+    mosfet_gpio_set(tilt_power_gpio, false);
+}
+
 static int parse_brightness_percent(const char *arg, unsigned int *brightness_percent) {
     if (arg == NULL || brightness_percent == NULL) {
         return -1;
@@ -408,9 +431,7 @@ int main(int argc, char **argv) {
             mosfet_gpiochip_path, pan_power_gpio_line,
             mosfet_gpiochip_path, tilt_power_gpio_line,
             mosfet_gpiochip_path, laser_gpio_line);
-    if (mosfet_gpio_set(&pan_power_gpio, true) < 0 ||
-        mosfet_gpio_set(&tilt_power_gpio, true) < 0 ||
-        mosfet_gpio_set(&laser_gpio, false) < 0) {
+    if (mosfet_gpio_set(&laser_gpio, false) < 0) {
         mosfet_gpio_close(&pan_power_gpio);
         mosfet_gpio_close(&tilt_power_gpio);
         mosfet_gpio_close(&laser_gpio);
@@ -451,6 +472,25 @@ int main(int argc, char **argv) {
         return -1;
     }
 
+    // Let PWM outputs settle before rails are switched to the servos.
+    usleep(50000);
+
+    if (enable_servo_rails_with_stagger(&pan_power_gpio, &tilt_power_gpio) < 0) {
+        mosfet_gpio_close(&pan_power_gpio);
+        mosfet_gpio_close(&tilt_power_gpio);
+        mosfet_gpio_close(&laser_gpio);
+        servo_pwm_close(&pan_pwm);
+        servo_pwm_close(&tilt_pwm);
+        if (context != NULL) {
+            awnn_destroy(context);
+            awnn_uninit();
+        }
+        if (camera.isOpened()) {
+            camera.release();
+        }
+        return -1;
+    }
+
     // Bare-minimum startup: center servos and keep laser OFF until active tracking.
     if (servo_pwm_set_angle(&pan_pwm, 0.0f) < 0 ||
         servo_pwm_set_angle(&tilt_pwm, 0.0f) < 0) {
@@ -473,8 +513,7 @@ int main(int argc, char **argv) {
     if (test_mode) {
         run_laser_circle_test(&pan_pwm, &tilt_pwm, &laser_gpio);
 
-        mosfet_gpio_set(&pan_power_gpio, false);
-        mosfet_gpio_set(&tilt_power_gpio, false);
+        disable_servo_rails(&pan_power_gpio, &tilt_power_gpio);
         mosfet_gpio_close(&pan_power_gpio);
         mosfet_gpio_close(&tilt_power_gpio);
         mosfet_gpio_close(&laser_gpio);
@@ -528,8 +567,7 @@ int main(int argc, char **argv) {
                 // Safety: no fresh camera for >2s, stop motion and power rails.
                 servo_pwm_set_angle(&pan_pwm, 0.0f);
                 servo_pwm_set_angle(&tilt_pwm, 0.0f);
-                mosfet_gpio_set(&pan_power_gpio, false);
-                mosfet_gpio_set(&tilt_power_gpio, false);
+                disable_servo_rails(&pan_power_gpio, &tilt_power_gpio);
                 mosfet_gpio_set(&laser_gpio, false);
                 servo_rails_powered = 0;
                 deadman_active = 1;
@@ -540,8 +578,7 @@ int main(int argc, char **argv) {
         }
 
         if (deadman_active && !servo_rails_powered) {
-            if (mosfet_gpio_set(&pan_power_gpio, true) < 0 ||
-                mosfet_gpio_set(&tilt_power_gpio, true) < 0) {
+            if (enable_servo_rails_with_stagger(&pan_power_gpio, &tilt_power_gpio) < 0) {
                 fprintf(stderr, "Deadman recovery failed: unable to re-enable servo rails.\n");
                 usleep(100000);
                 continue;
