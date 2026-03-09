@@ -636,8 +636,14 @@ int main(int argc, char **argv) {
             servo_state.tilt_deg = 0.0f;
             servo_pwm_set_angle(&pan_pwm, servo_state.pan_deg);
             servo_pwm_set_angle(&tilt_pwm, servo_state.tilt_deg);
-            mosfet_gpio_set(&laser_gpio, false);
-            laser_pwm_tick = 0;
+
+            // Keep laser active in regular mode even when no cat is currently locked,
+            // so hardware behavior is visible while waiting for stable detections.
+            const int laser_on_this_tick = (laser_pwm_on_ticks > 0) &&
+                (laser_pwm_tick < laser_pwm_on_ticks);
+            mosfet_gpio_set(&laser_gpio, laser_on_this_tick);
+            laser_pwm_tick = (laser_pwm_tick + 1) % laser_pwm_cycle_ticks;
+
             fprintf(stderr, "No cat%s; holding center servo=(%.2f,%.2f)\n",
                     inference_running ? " (inference busy)" : "",
                     servo_state.pan_deg, servo_state.tilt_deg);
