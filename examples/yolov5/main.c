@@ -17,6 +17,7 @@
 #include <string.h>
 #include <errno.h>
 #include <dirent.h>
+#include <signal.h>
 
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
@@ -49,6 +50,13 @@ struct InferenceThreadArgs {
     const char *frame_file;
     struct InferenceShared *shared;
 };
+
+static volatile sig_atomic_t g_sigint_received = 0;
+
+static void handle_sigint(int signum) {
+    (void)signum;
+    g_sigint_received = 1;
+}
 
 
 
@@ -264,6 +272,12 @@ static int parse_brightness_percent(const char *arg, unsigned int *brightness_pe
 }
 
 int main(int argc, char **argv) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = handle_sigint;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGINT, &sa, NULL);
+
     if (argc < 2 || argc > 4) {
         fprintf(stderr,
                 "Usage: %s <nbg> [camera_device] [laser_brightness_percent]\n"
@@ -354,7 +368,7 @@ int main(int argc, char **argv) {
             mosfet_gpiochip_path, laser_gpio_line);
     if (mosfet_gpio_set(&pan_power_gpio, true) < 0 ||
         mosfet_gpio_set(&tilt_power_gpio, true) < 0 ||
-        mosfet_gpio_set(&laser_gpio, false) < 0) {
+        mosfet_gpio_set(&laser_gpio, true) < 0) {
         mosfet_gpio_close(&pan_power_gpio);
         mosfet_gpio_close(&tilt_power_gpio);
         mosfet_gpio_close(&laser_gpio);
@@ -387,7 +401,7 @@ int main(int argc, char **argv) {
         return -1;
     }
 
-    // Bare-minimum startup: center servos and keep laser OFF until active tracking.
+    // Bare-minimum startup: center servos while laser stays enabled during runtime.
     if (servo_pwm_set_angle(&pan_pwm, 0.0f) < 0 ||
         servo_pwm_set_angle(&tilt_pwm, 0.0f) < 0) {
         mosfet_gpio_close(&pan_power_gpio);
@@ -438,7 +452,7 @@ int main(int argc, char **argv) {
     int deadman_active = 0;
 
     int printed_resolution = 0;
-    while (1) {
+    while (!g_sigint_received) {
         cv::Mat raw_frame;
         if (!camera.read(raw_frame) || raw_frame.empty()) {
             if (difftime(time(NULL), last_frame_time) > 2.0 && !deadman_active) {
@@ -463,8 +477,8 @@ int main(int argc, char **argv) {
                 usleep(100000);
                 continue;
             }
-            // Keep laser OFF on recovery; normal loop policy controls it afterwards.
-            mosfet_gpio_set(&laser_gpio, false);
+            // Keep laser ON during normal runtime after deadman recovery.
+            mosfet_gpio_set(&laser_gpio, true);
             servo_rails_powered = 1;
             deadman_active = 0;
             fprintf(stderr, "Deadman cleared: camera recovered, servo rails re-enabled.\n");
@@ -516,8 +530,7 @@ int main(int argc, char **argv) {
             servo_state.tilt_deg = 0.0f;
             servo_pwm_set_angle(&pan_pwm, servo_state.pan_deg);
             servo_pwm_set_angle(&tilt_pwm, servo_state.tilt_deg);
-            mosfet_gpio_set(&laser_gpio, false);
-            laser_pwm_tick = 0;
+            mosfet_gpio_set(&laser_gpio, true);
             fprintf(stderr, "No cat%s; holding center servo=(%.2f,%.2f)\n",
                     inference_running ? " (inference busy)" : "",
                     servo_state.pan_deg, servo_state.tilt_deg);
@@ -538,6 +551,11 @@ int main(int argc, char **argv) {
     pthread_join(inference_thread, NULL);
     pthread_mutex_destroy(&inference_shared.mutex);
     pthread_cond_destroy(&inference_shared.cond);
+
+    // User requested behavior: laser turns off when Ctrl-C is received.
+    if (g_sigint_received) {
+        mosfet_gpio_set(&laser_gpio, false);
+    }
 
     awnn_destroy(context);
     awnn_uninit();
