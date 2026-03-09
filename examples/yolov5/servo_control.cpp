@@ -2,8 +2,8 @@
 
 #include <stdio.h>
 
-static const double SERVO_PWM_FREQUENCY_HZ = 50.0;
-static const unsigned long long SERVO_PWM_CENTER_PULSE_NS = 1500000ULL;
+static const double SERVO_PWM_FREQUENCY_HZ = 1000.0;
+static const double SERVO_PWM_CENTER_DUTY_CYCLE = 0.5;
 
 static float clampf_local(float value, float min_v, float max_v) {
     return (value < min_v) ? min_v : ((value > max_v) ? max_v : value);
@@ -42,8 +42,8 @@ int servo_pwm_open(struct ServoPwm *servo_pwm, unsigned int chip, unsigned int c
         return -1;
     }
 
-    if (pwm_set_duty_cycle_ns(servo_pwm->handle, SERVO_PWM_CENTER_PULSE_NS) < 0) {
-        fprintf(stderr, "pwm_set_duty_cycle_ns failed for chip=%u channel=%u\n", chip, channel);
+    if (pwm_set_duty_cycle(servo_pwm->handle, SERVO_PWM_CENTER_DUTY_CYCLE) < 0) {
+        fprintf(stderr, "pwm_set_duty_cycle failed for chip=%u channel=%u\n", chip, channel);
         pwm_close(servo_pwm->handle);
         pwm_free(servo_pwm->handle);
         servo_pwm->handle = NULL;
@@ -59,11 +59,11 @@ int servo_pwm_set_angle(struct ServoPwm *servo_pwm, float angle_deg) {
     }
 
     const float clamped = clampf_local(angle_deg, -45.0f, 45.0f);
-    const float ratio = (clamped + 45.0f) / 90.0f;
-    const unsigned long long pulse_ns = (unsigned long long)(1000000.0f + ratio * 1000000.0f);
+    const double ratio = (double)(clamped + 45.0f) / 90.0;
+    const double duty_cycle = ratio;
 
-    if (pwm_set_duty_cycle_ns(servo_pwm->handle, pulse_ns) < 0) {
-        fprintf(stderr, "pwm_set_duty_cycle_ns failed for chip=%u channel=%u\n", servo_pwm->chip, servo_pwm->channel);
+    if (pwm_set_duty_cycle(servo_pwm->handle, duty_cycle) < 0) {
+        fprintf(stderr, "pwm_set_duty_cycle failed for chip=%u channel=%u\n", servo_pwm->chip, servo_pwm->channel);
         return -1;
     }
 
