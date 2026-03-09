@@ -404,6 +404,8 @@ int main(int argc, char **argv) {
 
     ServoState servo_state = {0.0f, 0.0f};
     CatTrackFilterState track_filter = {0};
+    struct RandomScanState random_scan_state = {0};
+    retarget_random_scan(&random_scan_state);
 
     // Deadman: if camera stream stalls, center servos and cut power.
     time_t last_frame_time = time(NULL);
@@ -474,27 +476,24 @@ int main(int argc, char **argv) {
             servo_pwm_set_angle(&pan_pwm, servo_state.pan_deg);
             servo_pwm_set_angle(&tilt_pwm, servo_state.tilt_deg);
 
-            // Software PWM for brightness while operating on a detected cat.
-            const int laser_on_this_tick = (laser_pwm_on_ticks > 0) &&
-                (laser_pwm_tick < laser_pwm_on_ticks);
-            mosfet_gpio_set(&laser_gpio, laser_on_this_tick);
-            laser_pwm_tick = (laser_pwm_tick + 1) % laser_pwm_cycle_ticks;
-
             fprintf(stderr,
                     "cat_conf=%.2f target=(%.1f,%.1f) servo=(%.2f,%.2f)\n",
                     smoothed.confidence, cat_center.x, cat_center.y,
                     servo_state.pan_deg, servo_state.tilt_deg);
         } else {
-            servo_state.pan_deg = 0.0f;
-            servo_state.tilt_deg = 0.0f;
+            update_random_scan_servo(&servo_state, &random_scan_state, control_dt_sec);
             servo_pwm_set_angle(&pan_pwm, servo_state.pan_deg);
             servo_pwm_set_angle(&tilt_pwm, servo_state.tilt_deg);
-            mosfet_gpio_set(&laser_gpio, false);
-            laser_pwm_tick = 0;
-            fprintf(stderr, "No cat%s; holding center servo=(%.2f,%.2f)\n",
+            fprintf(stderr, "No cat%s; random-scan servo=(%.2f,%.2f)\n",
                     inference_running ? " (inference busy)" : "",
                     servo_state.pan_deg, servo_state.tilt_deg);
         }
+
+        // Keep laser on during normal operation regardless of cat presence.
+        const int laser_on_this_tick = (laser_pwm_on_ticks > 0) &&
+            (laser_pwm_tick < laser_pwm_on_ticks);
+        mosfet_gpio_set(&laser_gpio, laser_on_this_tick);
+        laser_pwm_tick = (laser_pwm_tick + 1) % laser_pwm_cycle_ticks;
 
         cv::Mat detection = cv::imread("result.png");
         if (!detection.empty()) cv::imshow("YOLOv5 Live Detection", detection);
