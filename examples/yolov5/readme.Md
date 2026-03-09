@@ -112,7 +112,7 @@ If defaults fail, startup tries a fallback candidate list and scans `/sys/class/
 
 Note: board docs often mention **GPIO pin numbers** (e.g. pin `10`) for PWM-capable pins. Those are not the same as Linux PWM `channel` indices used by this demo (`pwmchipX` + `channel`).
 
-For A7Z-style docs that mention PWM1/2, a common Linux mapping to try is `pwmchip1` channels `1/2` (the code now prioritizes those in fallback probing).
+For A7Z-style docs that map PWM1-x to header pin numbers, common candidates are `pwmchip1` channel `10` for PWM1-2, channel `12` for PWM1-4, and channel `13` for PWM1-5 (the fallback probing now prioritizes these).
 
 ## 8) Typical control tick (conceptual)
 

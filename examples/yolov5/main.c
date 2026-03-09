@@ -381,6 +381,11 @@ int main(int argc, char **argv) {
     append_candidate_unique(pan_candidates, &pan_candidate_count, 64, pan_pwm_chip, pan_pwm_channel);
     append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, tilt_pwm_chip, tilt_pwm_channel);
 
+    // A7Z doc-style mapping often uses channel == header pin number for PWM1-x
+    // (e.g. PWM1-2 -> channel 10), so prioritize those candidates first.
+    append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 1, 10); // PWM1-2 / pin 10
+    append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 1, 12); // PWM1-4 / pin 12
+    append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 1, 13); // PWM1-5 / pin 13
     append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 1, 2);
     append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 1, 1);
     append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 1, 5);
@@ -390,6 +395,9 @@ int main(int argc, char **argv) {
     append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 2, 0);
     append_candidate_unique(pan_candidates, &pan_candidate_count, 64, 2, 1);
 
+    append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, 1, 12); // PWM1-4 / pin 12
+    append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, 1, 13); // PWM1-5 / pin 13
+    append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, 1, 10); // PWM1-2 / pin 10
     append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, 1, 1);
     append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, 1, 2);
     append_candidate_unique(tilt_candidates, &tilt_candidate_count, 64, 1, 4);
