@@ -137,6 +137,16 @@ If you are onboarding to this code, start reading in this order:
 
 If servo init fails at startup (`pwm_open` or `pwm_enable`), the program now logs detected `pwmchip*` devices and each `npwm` value from `/sys/class/pwm`. Use that output to set the correct channel mapping for your board overlay.
 
+### MOSFET polarity troubleshooting
+
+If servos move when MOSFETs are bypassed but stop moving when rails are switched through MOSFET boards, verify gate polarity.
+
+- Default behavior is active-high (GPIO high => power enabled).
+- If your board is active-low, set `MOSFET_ACTIVE_LOW=1`.
+- You can override per rail: `PAN_POWER_ACTIVE_LOW=1`, `TILT_POWER_ACTIVE_LOW=1`, `LASER_ACTIVE_LOW=1`.
+
+At startup the program logs the effective active-low flags so wiring/polarity assumptions are visible in runtime logs.
+
 
 ### Minimal control flow
 

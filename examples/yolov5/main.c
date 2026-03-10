@@ -271,6 +271,21 @@ static int parse_brightness_percent(const char *arg, unsigned int *brightness_pe
     return 0;
 }
 
+static bool env_flag_enabled(const char *name) {
+    const char *v = getenv(name);
+    if (v == NULL) {
+        return false;
+    }
+
+    return strcmp(v, "1") == 0 ||
+           strcmp(v, "true") == 0 ||
+           strcmp(v, "TRUE") == 0 ||
+           strcmp(v, "yes") == 0 ||
+           strcmp(v, "YES") == 0 ||
+           strcmp(v, "on") == 0 ||
+           strcmp(v, "ON") == 0;
+}
+
 int main(int argc, char **argv) {
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -328,6 +343,11 @@ int main(int argc, char **argv) {
     // Similar to Arduino laser pin control, but via Linux gpiochip line.
     const unsigned int laser_gpio_line = 35;
 
+    const bool mosfet_active_low_default = env_flag_enabled("MOSFET_ACTIVE_LOW");
+    const bool pan_power_active_low = env_flag_enabled("PAN_POWER_ACTIVE_LOW") || mosfet_active_low_default;
+    const bool tilt_power_active_low = env_flag_enabled("TILT_POWER_ACTIVE_LOW") || mosfet_active_low_default;
+    const bool laser_active_low = env_flag_enabled("LASER_ACTIVE_LOW") || mosfet_active_low_default;
+
     const int input_channels = 3;
     const float control_dt_sec = 0.03f;
 
@@ -351,9 +371,9 @@ int main(int argc, char **argv) {
     struct MosfetPowerGpio pan_power_gpio = {0};
     struct MosfetPowerGpio tilt_power_gpio = {0};
     struct MosfetPowerGpio laser_gpio = {0};
-    if (mosfet_gpio_open(&pan_power_gpio, mosfet_gpiochip_path, pan_power_gpio_line) < 0 ||
-        mosfet_gpio_open(&tilt_power_gpio, mosfet_gpiochip_path, tilt_power_gpio_line) < 0 ||
-        mosfet_gpio_open(&laser_gpio, mosfet_gpiochip_path, laser_gpio_line) < 0) {
+    if (mosfet_gpio_open(&pan_power_gpio, mosfet_gpiochip_path, pan_power_gpio_line, pan_power_active_low) < 0 ||
+        mosfet_gpio_open(&tilt_power_gpio, mosfet_gpiochip_path, tilt_power_gpio_line, tilt_power_active_low) < 0 ||
+        mosfet_gpio_open(&laser_gpio, mosfet_gpiochip_path, laser_gpio_line, laser_active_low) < 0) {
         awnn_destroy(context);
         awnn_uninit();
         camera.release();
@@ -362,10 +382,11 @@ int main(int argc, char **argv) {
     fprintf(stderr,
             "GPIO mapping: pan_power=%s line %u (A7Z pin 29 / PB0), "
             "tilt_power=%s line %u (A7Z pin 30 / PB1), "
-            "laser=%s line %u (A7Z pin 31 / PB3).\n",
+            "laser=%s line %u (A7Z pin 31 / PB3). active_low: pan=%d tilt=%d laser=%d\n",
             mosfet_gpiochip_path, pan_power_gpio_line,
             mosfet_gpiochip_path, tilt_power_gpio_line,
-            mosfet_gpiochip_path, laser_gpio_line);
+            mosfet_gpiochip_path, laser_gpio_line,
+            pan_power_active_low, tilt_power_active_low, laser_active_low);
     if (mosfet_gpio_set(&pan_power_gpio, true) < 0 ||
         mosfet_gpio_set(&tilt_power_gpio, true) < 0 ||
         mosfet_gpio_set(&laser_gpio, true) < 0) {
