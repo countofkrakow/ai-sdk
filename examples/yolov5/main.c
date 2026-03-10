@@ -321,8 +321,6 @@ int main(int argc, char **argv) {
     const unsigned int tilt_pwm_channel = 2;
 
     const char *mosfet_gpiochip_path = "/dev/gpiochip0";
-    const unsigned int pan_power_gpio_line = 32;
-    const unsigned int tilt_power_gpio_line = 33;
 
     // Dedicated laser control GPIO (A7Z pin 31: PB3 => gpiochip0 line 35).
     // Similar to Arduino laser pin control, but via Linux gpiochip line.
@@ -348,29 +346,17 @@ int main(int argc, char **argv) {
         return -1;
     }
 
-    struct MosfetPowerGpio pan_power_gpio = {0};
-    struct MosfetPowerGpio tilt_power_gpio = {0};
     struct MosfetPowerGpio laser_gpio = {0};
-    if (mosfet_gpio_open(&pan_power_gpio, mosfet_gpiochip_path, pan_power_gpio_line) < 0 ||
-        mosfet_gpio_open(&tilt_power_gpio, mosfet_gpiochip_path, tilt_power_gpio_line) < 0 ||
-        mosfet_gpio_open(&laser_gpio, mosfet_gpiochip_path, laser_gpio_line) < 0) {
+    if (mosfet_gpio_open(&laser_gpio, mosfet_gpiochip_path, laser_gpio_line) < 0) {
         awnn_destroy(context);
         awnn_uninit();
         camera.release();
         return -1;
     }
     fprintf(stderr,
-            "GPIO mapping: pan_power=%s line %u (A7Z pin 29 / PB0), "
-            "tilt_power=%s line %u (A7Z pin 30 / PB1), "
-            "laser=%s line %u (A7Z pin 31 / PB3).\n",
-            mosfet_gpiochip_path, pan_power_gpio_line,
-            mosfet_gpiochip_path, tilt_power_gpio_line,
+            "GPIO mapping: laser=%s line %u (A7Z pin 31 / PB3).\n",
             mosfet_gpiochip_path, laser_gpio_line);
-    if (mosfet_gpio_set(&pan_power_gpio, true) < 0 ||
-        mosfet_gpio_set(&tilt_power_gpio, true) < 0 ||
-        mosfet_gpio_set(&laser_gpio, true) < 0) {
-        mosfet_gpio_close(&pan_power_gpio);
-        mosfet_gpio_close(&tilt_power_gpio);
+    if (mosfet_gpio_set(&laser_gpio, true) < 0) {
         mosfet_gpio_close(&laser_gpio);
         awnn_destroy(context);
         awnn_uninit();
@@ -390,8 +376,6 @@ int main(int argc, char **argv) {
                 "Servo init failed for configured PAN(chip=%u,channel=%u) TILT(chip=%u,channel=%u).\n",
                 pan_pwm_chip, pan_pwm_channel, tilt_pwm_chip, tilt_pwm_channel);
         print_pwm_sysfs_overview();
-        mosfet_gpio_close(&pan_power_gpio);
-        mosfet_gpio_close(&tilt_power_gpio);
         mosfet_gpio_close(&laser_gpio);
         servo_pwm_close(&pan_pwm);
         servo_pwm_close(&tilt_pwm);
@@ -404,8 +388,6 @@ int main(int argc, char **argv) {
     // Bare-minimum startup: center servos while laser stays enabled during runtime.
     if (servo_pwm_set_angle(&pan_pwm, 0.0f) < 0 ||
         servo_pwm_set_angle(&tilt_pwm, 0.0f) < 0) {
-        mosfet_gpio_close(&pan_power_gpio);
-        mosfet_gpio_close(&tilt_power_gpio);
         mosfet_gpio_close(&laser_gpio);
         servo_pwm_close(&pan_pwm);
         servo_pwm_close(&tilt_pwm);
@@ -430,8 +412,6 @@ int main(int argc, char **argv) {
     struct InferenceThreadArgs worker_args = {context, inference_frame_file, &inference_shared};
     pthread_t inference_thread;
     if (pthread_create(&inference_thread, NULL, inference_thread_main, &worker_args) != 0) {
-        mosfet_gpio_close(&pan_power_gpio);
-        mosfet_gpio_close(&tilt_power_gpio);
         mosfet_gpio_close(&laser_gpio);
         servo_pwm_close(&pan_pwm);
         servo_pwm_close(&tilt_pwm);
@@ -446,9 +426,8 @@ int main(int argc, char **argv) {
     ServoState servo_state = {0.0f, 0.0f};
     CatTrackFilterState track_filter = {0};
 
-    // Deadman: if camera stream stalls, center servos and cut power.
+    // Deadman: if camera stream stalls, center servos and disable laser output.
     time_t last_frame_time = time(NULL);
-    int servo_rails_powered = 1;
     int deadman_active = 0;
 
     int printed_resolution = 0;
@@ -456,32 +435,22 @@ int main(int argc, char **argv) {
         cv::Mat raw_frame;
         if (!camera.read(raw_frame) || raw_frame.empty()) {
             if (difftime(time(NULL), last_frame_time) > 2.0 && !deadman_active) {
-                // Safety: no fresh camera for >2s, stop motion and power rails.
+                // Safety: no fresh camera for >2s, stop motion and disable laser.
                 servo_pwm_set_angle(&pan_pwm, 0.0f);
                 servo_pwm_set_angle(&tilt_pwm, 0.0f);
-                mosfet_gpio_set(&pan_power_gpio, false);
-                mosfet_gpio_set(&tilt_power_gpio, false);
                 mosfet_gpio_set(&laser_gpio, false);
-                servo_rails_powered = 0;
                 deadman_active = 1;
-                fprintf(stderr, "Deadman engaged: camera stalled, servo rails powered off.\n");
+                fprintf(stderr, "Deadman engaged: camera stalled, laser disabled.\n");
             }
             usleep(100000);
             continue;
         }
 
-        if (deadman_active && !servo_rails_powered) {
-            if (mosfet_gpio_set(&pan_power_gpio, true) < 0 ||
-                mosfet_gpio_set(&tilt_power_gpio, true) < 0) {
-                fprintf(stderr, "Deadman recovery failed: unable to re-enable servo rails.\n");
-                usleep(100000);
-                continue;
-            }
+        if (deadman_active) {
             // Keep laser ON during normal runtime after deadman recovery.
             mosfet_gpio_set(&laser_gpio, true);
-            servo_rails_powered = 1;
             deadman_active = 0;
-            fprintf(stderr, "Deadman cleared: camera recovered, servo rails re-enabled.\n");
+            fprintf(stderr, "Deadman cleared: camera recovered, laser re-enabled.\n");
         }
 
         if (!printed_resolution) {
@@ -559,8 +528,6 @@ int main(int argc, char **argv) {
 
     awnn_destroy(context);
     awnn_uninit();
-    mosfet_gpio_close(&pan_power_gpio);
-    mosfet_gpio_close(&tilt_power_gpio);
     mosfet_gpio_close(&laser_gpio);
     servo_pwm_close(&pan_pwm);
     servo_pwm_close(&tilt_pwm);
