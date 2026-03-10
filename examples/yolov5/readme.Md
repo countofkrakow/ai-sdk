@@ -148,6 +148,15 @@ If servos move when MOSFETs are bypassed but stop moving when rails are switched
 At startup the program logs the effective active-low flags so wiring/polarity assumptions are visible in runtime logs.
 
 
+### Servo hardware quick test mode
+
+Use `--test` to run a dedicated servo movement test (3 cycles, 1 second between each movement) and then exit:
+
+- `./yolov5 <model.nbg> --test`
+- Optional args still work with test mode: `./yolov5 <model.nbg> /dev/video0 100 --test`
+
+This is useful for validating PWM + MOSFET power path behavior without running the full tracking loop.
+
 ### Minimal control flow
 
 Servo/laser behavior is intentionally simplified: when a cat is detected, servos move toward cat bbox center; when no cat is detected, servos hold center; laser stays enabled while rails are powered.
