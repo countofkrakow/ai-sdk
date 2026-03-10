@@ -137,6 +137,25 @@ If you are onboarding to this code, start reading in this order:
 
 If servo init fails at startup (`pwm_open` or `pwm_enable`), the program now logs detected `pwmchip*` devices and each `npwm` value from `/sys/class/pwm`. Use that output to set the correct channel mapping for your board overlay.
 
+### MOSFET polarity troubleshooting
+
+If servos move when MOSFETs are bypassed but stop moving when rails are switched through MOSFET boards, verify gate polarity.
+
+- Default behavior is active-high (GPIO high => power enabled).
+- If your board is active-low, set `MOSFET_ACTIVE_LOW=1`.
+- You can override per rail: `PAN_POWER_ACTIVE_LOW=1`, `TILT_POWER_ACTIVE_LOW=1`, `LASER_ACTIVE_LOW=1`.
+
+At startup the program logs the effective active-low flags so wiring/polarity assumptions are visible in runtime logs.
+
+
+### Servo hardware quick test mode
+
+Use `--test` to run a dedicated smooth circular servo test (3 circles with a 1 second pause between circles) and then exit:
+
+- `./yolov5 <model.nbg> --test`
+- Optional args still work with test mode: `./yolov5 <model.nbg> /dev/video0 100 --test`
+
+This is useful for validating PWM + MOSFET power path behavior without running the full tracking loop.
 
 ### Minimal control flow
 
