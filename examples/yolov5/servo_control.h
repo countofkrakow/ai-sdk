@@ -31,20 +31,25 @@ struct ServoPwm {
     pwm_t *handle;
     unsigned int chip;
     unsigned int channel;
+    float min_deg;
+    float max_deg;
+    float neutral_deg;
 };
 
 struct MosfetPowerGpio {
     gpio_t *handle;
     const char *chip_path;
     unsigned int line;
+    bool active_low;
 };
 
 int servo_pwm_open(struct ServoPwm *servo_pwm, unsigned int chip, unsigned int channel);
+void servo_pwm_configure_range(struct ServoPwm *servo_pwm, float min_deg, float max_deg, float neutral_deg);
 int servo_pwm_set_angle(struct ServoPwm *servo_pwm, float angle_deg);
 int servo_pwm_enable(struct ServoPwm *servo_pwm);
 void servo_pwm_close(struct ServoPwm *servo_pwm);
 
-int mosfet_gpio_open(struct MosfetPowerGpio *mosfet_gpio, const char *chip_path, unsigned int line);
+int mosfet_gpio_open(struct MosfetPowerGpio *mosfet_gpio, const char *chip_path, unsigned int line, bool active_low);
 int mosfet_gpio_set(struct MosfetPowerGpio *mosfet_gpio, bool enabled);
 void mosfet_gpio_close(struct MosfetPowerGpio *mosfet_gpio);
 

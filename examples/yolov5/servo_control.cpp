@@ -2,6 +2,11 @@
 
 #include <stdio.h>
 
+static const float SERVO_DEG_MIN = 0.0f;
+static const float SERVO_DEG_MAX = 180.0f;
+static const unsigned long long SERVO_PULSE_MIN_NS = 544000ULL;
+static const unsigned long long SERVO_PULSE_MAX_NS = 2400000ULL;
+
 static float clampf_local(float value, float min_v, float max_v) {
     return (value < min_v) ? min_v : ((value > max_v) ? max_v : value);
 }
@@ -15,6 +20,9 @@ int servo_pwm_open(struct ServoPwm *servo_pwm, unsigned int chip, unsigned int c
 
     servo_pwm->chip = chip;
     servo_pwm->channel = channel;
+    servo_pwm->min_deg = 0.0f;
+    servo_pwm->max_deg = 180.0f;
+    servo_pwm->neutral_deg = 90.0f;
 
     if (pwm_open(servo_pwm->handle, chip, channel) < 0) {
         fprintf(stderr, "pwm_open failed for chip=%u channel=%u\n", chip, channel);
@@ -34,14 +42,33 @@ int servo_pwm_open(struct ServoPwm *servo_pwm, unsigned int chip, unsigned int c
     return 0;
 }
 
+void servo_pwm_configure_range(struct ServoPwm *servo_pwm, float min_deg, float max_deg, float neutral_deg) {
+    if (servo_pwm == NULL) {
+        return;
+    }
+
+    servo_pwm->min_deg = clampf_local(min_deg, SERVO_DEG_MIN, SERVO_DEG_MAX);
+    servo_pwm->max_deg = clampf_local(max_deg, SERVO_DEG_MIN, SERVO_DEG_MAX);
+    if (servo_pwm->max_deg < servo_pwm->min_deg) {
+        const float tmp = servo_pwm->min_deg;
+        servo_pwm->min_deg = servo_pwm->max_deg;
+        servo_pwm->max_deg = tmp;
+    }
+    servo_pwm->neutral_deg = clampf_local(neutral_deg, servo_pwm->min_deg, servo_pwm->max_deg);
+}
+
 int servo_pwm_set_angle(struct ServoPwm *servo_pwm, float angle_deg) {
     if (servo_pwm->handle == NULL) {
         return -1;
     }
 
-    const float clamped = clampf_local(angle_deg, -45.0f, 45.0f);
-    const float ratio = (clamped + 45.0f) / 90.0f;
-    const unsigned long long pulse_ns = (unsigned long long)(1000000.0f + ratio * 1000000.0f);
+    const float absolute_deg = clampf_local(
+        servo_pwm->neutral_deg + angle_deg,
+        servo_pwm->min_deg,
+        servo_pwm->max_deg);
+    const float ratio = (absolute_deg - SERVO_DEG_MIN) / (SERVO_DEG_MAX - SERVO_DEG_MIN);
+    const unsigned long long pulse_ns = (unsigned long long)(
+        SERVO_PULSE_MIN_NS + ratio * (float)(SERVO_PULSE_MAX_NS - SERVO_PULSE_MIN_NS));
 
     if (pwm_set_duty_cycle_ns(servo_pwm->handle, pulse_ns) < 0) {
         fprintf(stderr, "pwm_set_duty_cycle_ns failed for chip=%u channel=%u\n", servo_pwm->chip, servo_pwm->channel);
@@ -75,7 +102,7 @@ void servo_pwm_close(struct ServoPwm *servo_pwm) {
     servo_pwm->handle = NULL;
 }
 
-int mosfet_gpio_open(struct MosfetPowerGpio *mosfet_gpio, const char *chip_path, unsigned int line) {
+int mosfet_gpio_open(struct MosfetPowerGpio *mosfet_gpio, const char *chip_path, unsigned int line, bool active_low) {
     mosfet_gpio->handle = gpio_new();
     if (mosfet_gpio->handle == NULL) {
         fprintf(stderr, "gpio_new failed for %s line=%u\n", chip_path, line);
@@ -84,6 +111,7 @@ int mosfet_gpio_open(struct MosfetPowerGpio *mosfet_gpio, const char *chip_path,
 
     mosfet_gpio->chip_path = chip_path;
     mosfet_gpio->line = line;
+    mosfet_gpio->active_low = active_low;
 
     if (gpio_open(mosfet_gpio->handle, chip_path, line, GPIO_DIR_OUT_LOW) < 0) {
         fprintf(stderr, "gpio_open failed for %s line=%u\n", chip_path, line);
@@ -100,7 +128,8 @@ int mosfet_gpio_set(struct MosfetPowerGpio *mosfet_gpio, bool enabled) {
         return -1;
     }
 
-    if (gpio_write(mosfet_gpio->handle, enabled) < 0) {
+    const bool level = mosfet_gpio->active_low ? !enabled : enabled;
+    if (gpio_write(mosfet_gpio->handle, level) < 0) {
         fprintf(stderr, "gpio_write failed for %s line=%u\n", mosfet_gpio->chip_path, mosfet_gpio->line);
         return -1;
     }
@@ -135,6 +164,6 @@ void update_servo_state(
     float pan_delta = clampf_local(err_x * pan_gain, -max_step_deg, max_step_deg);
     float tilt_delta = clampf_local(err_y * tilt_gain, -max_step_deg, max_step_deg);
 
-    servo_state->pan_deg = clampf_local(servo_state->pan_deg + pan_delta, -45.0f, 45.0f);
-    servo_state->tilt_deg = clampf_local(servo_state->tilt_deg + tilt_delta, -45.0f, 45.0f);
+    servo_state->pan_deg = clampf_local(servo_state->pan_deg + pan_delta, -30.0f, 30.0f);
+    servo_state->tilt_deg = clampf_local(servo_state->tilt_deg + tilt_delta, -30.0f, 30.0f);
 }
