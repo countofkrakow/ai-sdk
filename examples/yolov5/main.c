@@ -489,8 +489,6 @@ int main(int argc, char **argv) {
     }
     usleep(150000);
 
-    probe_servo_signs_of_life(&pan_pwm, &tilt_pwm);
-
     if (servo_test_mode) {
         run_servo_test_sequence(&pan_pwm, &tilt_pwm);
         mosfet_gpio_set(&laser_gpio, false);
@@ -504,6 +502,8 @@ int main(int argc, char **argv) {
         camera.release();
         return 0;
     }
+
+    probe_servo_signs_of_life(&pan_pwm, &tilt_pwm);
 
     struct InferenceShared inference_shared;
     pthread_mutex_init(&inference_shared.mutex, NULL);

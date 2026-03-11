@@ -115,7 +115,8 @@ void mosfet_gpio_close(struct MosfetPowerGpio *mosfet_gpio) {
         return;
     }
 
-    gpio_write(mosfet_gpio->handle, false);
+    // Drive logical OFF on close so active-low and active-high rails both shut down correctly.
+    mosfet_gpio_set(mosfet_gpio, false);
     gpio_close(mosfet_gpio->handle);
     gpio_free(mosfet_gpio->handle);
     mosfet_gpio->handle = NULL;
