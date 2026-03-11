@@ -115,7 +115,9 @@ void mosfet_gpio_close(struct MosfetPowerGpio *mosfet_gpio) {
         return;
     }
 
-    gpio_write(mosfet_gpio->handle, false);
+    // Ensure logical disable semantics are respected for both active-high and
+    // active-low rails before releasing the line.
+    mosfet_gpio_set(mosfet_gpio, false);
     gpio_close(mosfet_gpio->handle);
     gpio_free(mosfet_gpio->handle);
     mosfet_gpio->handle = NULL;

@@ -314,6 +314,24 @@ static bool env_flag_enabled(const char *name) {
            strcmp(v, "ON") == 0;
 }
 
+static int enable_servo_rails_with_soft_start(struct MosfetPowerGpio *pan_power_gpio,
+                                              struct MosfetPowerGpio *tilt_power_gpio) {
+    // Match ArduinoCatLaserpointer convention: sequence rail enables with short
+    // delays to reduce inrush and avoid supply droop when both servos wake.
+    if (mosfet_gpio_set(pan_power_gpio, true) < 0) {
+        return -1;
+    }
+    usleep(125000);
+
+    if (mosfet_gpio_set(tilt_power_gpio, true) < 0) {
+        mosfet_gpio_set(pan_power_gpio, false);
+        return -1;
+    }
+    usleep(125000);
+
+    return 0;
+}
+
 int main(int argc, char **argv) {
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -439,8 +457,7 @@ int main(int argc, char **argv) {
             mosfet_gpiochip_path, tilt_power_gpio_line,
             mosfet_gpiochip_path, laser_gpio_line,
             pan_power_active_low, tilt_power_active_low, laser_active_low);
-    if (mosfet_gpio_set(&pan_power_gpio, true) < 0 ||
-        mosfet_gpio_set(&tilt_power_gpio, true) < 0 ||
+    if (enable_servo_rails_with_soft_start(&pan_power_gpio, &tilt_power_gpio) < 0 ||
         mosfet_gpio_set(&laser_gpio, true) < 0) {
         mosfet_gpio_close(&pan_power_gpio);
         mosfet_gpio_close(&tilt_power_gpio);
@@ -558,8 +575,7 @@ int main(int argc, char **argv) {
         }
 
         if (deadman_active && !servo_rails_powered) {
-            if (mosfet_gpio_set(&pan_power_gpio, true) < 0 ||
-                mosfet_gpio_set(&tilt_power_gpio, true) < 0) {
+            if (enable_servo_rails_with_soft_start(&pan_power_gpio, &tilt_power_gpio) < 0) {
                 fprintf(stderr, "Deadman recovery failed: unable to re-enable servo rails.\n");
                 usleep(100000);
                 continue;

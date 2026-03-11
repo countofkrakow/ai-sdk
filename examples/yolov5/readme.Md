@@ -147,6 +147,8 @@ If servos move when MOSFETs are bypassed but stop moving when rails are switched
 
 At startup the program logs the effective active-low flags so wiring/polarity assumptions are visible in runtime logs.
 
+Servo rail power-up now follows the ArduinoCatLaserpointer convention: pan rail enable, short delay, tilt rail enable, short delay. This staged startup reduces inrush-induced supply droop that can cause servo clicking without movement.
+
 
 ### Servo hardware quick test mode
 
