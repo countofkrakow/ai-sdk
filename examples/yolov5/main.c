@@ -176,6 +176,34 @@ static void probe_servo_signs_of_life(struct ServoPwm *pan_pwm,
             "Servo probe complete. If movement looked swapped, invert pan/tilt channels in main.c.\n");
 }
 
+static void run_servo_test_sequence(struct ServoPwm *pan_pwm,
+                                    struct ServoPwm *tilt_pwm) {
+    fprintf(stderr, "Servo test mode: drawing 3 smooth circles...\n");
+
+    const float pan_radius_deg = 25.0f;
+    const float tilt_radius_deg = 15.0f;
+    const int steps_per_circle = 72;
+
+    for (int cycle = 0; cycle < 3; ++cycle) {
+        fprintf(stderr, "Servo test: circle %d/3\n", cycle + 1);
+        for (int step = 0; step < steps_per_circle; ++step) {
+            float t = (2.0f * (float)M_PI * (float)step) / (float)steps_per_circle;
+            float pan = pan_radius_deg * cosf(t);
+            float tilt = tilt_radius_deg * sinf(t);
+            servo_pwm_set_angle(pan_pwm, pan);
+            servo_pwm_set_angle(tilt_pwm, tilt);
+            usleep(25000);
+        }
+
+        // Pause briefly between circles so each pass is visually distinct.
+        sleep(1);
+    }
+
+    servo_pwm_set_angle(pan_pwm, 0.0f);
+    servo_pwm_set_angle(tilt_pwm, 0.0f);
+    fprintf(stderr, "Servo test mode complete.\n");
+}
+
 static void run_laser_alignment_sequence(struct ServoPwm *pan_pwm,
                                          struct ServoPwm *tilt_pwm,
                                          struct MosfetPowerGpio *laser_gpio) {
@@ -278,12 +306,13 @@ int main(int argc, char **argv) {
     sigemptyset(&sa.sa_mask);
     sigaction(SIGINT, &sa, NULL);
 
-    if (argc < 2 || argc > 4) {
+    if (argc < 2) {
         fprintf(stderr,
-                "Usage: %s <nbg> [camera_device] [laser_brightness_percent]\n"
+                "Usage: %s <nbg> [camera_device] [laser_brightness_percent] [--test]\n"
                 "  nbg: path to YOLOv5 .nb model\n"
                 "  camera_device: optional V4L2 node (default: /dev/video0)\n"
-                "  laser_brightness_percent: optional integer 0..100 (default: 100)\n",
+                "  laser_brightness_percent: optional integer 0..100 (default: 100)\n"
+                "  --test: run a 3-cycle smooth circular servo test and exit\n",
                 argv[0]);
         return -1;
     }
@@ -291,17 +320,40 @@ int main(int argc, char **argv) {
     const char *nbg = argv[1];
     const char *camera_device = "/dev/video0";
     unsigned int laser_brightness_percent = 100;
+    bool servo_test_mode = false;
 
-    if (argc >= 3) {
-        // Backward compatible: allow ./yolov5 <nbg> <brightness> or <camera>.
-        if (parse_brightness_percent(argv[2], &laser_brightness_percent) != 0) {
-            camera_device = argv[2];
+    int positional_seen = 0;
+    for (int i = 2; i < argc; ++i) {
+        const char *arg = argv[i];
+        if (strcmp(arg, "--test") == 0) {
+            servo_test_mode = true;
+            continue;
         }
-    }
-    if (argc >= 4 && parse_brightness_percent(argv[3], &laser_brightness_percent) != 0) {
-        fprintf(stderr,
-                "Invalid laser_brightness_percent '%s'. Expected integer 0..100.\n",
-                argv[3]);
+
+        if (positional_seen == 0) {
+            // Backward compatible: allow ./yolov5 <nbg> <brightness> or <camera>.
+            if (parse_brightness_percent(arg, &laser_brightness_percent) == 0) {
+                positional_seen = 2;
+                continue;
+            }
+            camera_device = arg;
+            positional_seen = 1;
+            continue;
+        }
+
+        if (positional_seen == 1) {
+            if (parse_brightness_percent(arg, &laser_brightness_percent) == 0) {
+                positional_seen = 2;
+                continue;
+            }
+
+            fprintf(stderr,
+                    "Invalid laser_brightness_percent '%s'. Expected integer 0..100.\n",
+                    arg);
+            return -1;
+        }
+
+        fprintf(stderr, "Unexpected argument '%s'.\n", arg);
         return -1;
     }
 
@@ -351,9 +403,9 @@ int main(int argc, char **argv) {
     struct MosfetPowerGpio pan_power_gpio = {0};
     struct MosfetPowerGpio tilt_power_gpio = {0};
     struct MosfetPowerGpio laser_gpio = {0};
-    if (mosfet_gpio_open(&pan_power_gpio, mosfet_gpiochip_path, pan_power_gpio_line) < 0 ||
-        mosfet_gpio_open(&tilt_power_gpio, mosfet_gpiochip_path, tilt_power_gpio_line) < 0 ||
-        mosfet_gpio_open(&laser_gpio, mosfet_gpiochip_path, laser_gpio_line) < 0) {
+    if (mosfet_gpio_open(&pan_power_gpio, mosfet_gpiochip_path, pan_power_gpio_line, false) < 0 ||
+        mosfet_gpio_open(&tilt_power_gpio, mosfet_gpiochip_path, tilt_power_gpio_line, false) < 0 ||
+        mosfet_gpio_open(&laser_gpio, mosfet_gpiochip_path, laser_gpio_line, false) < 0) {
         awnn_destroy(context);
         awnn_uninit();
         camera.release();
@@ -417,6 +469,20 @@ int main(int argc, char **argv) {
     usleep(150000);
 
     probe_servo_signs_of_life(&pan_pwm, &tilt_pwm);
+
+    if (servo_test_mode) {
+        run_servo_test_sequence(&pan_pwm, &tilt_pwm);
+        mosfet_gpio_set(&laser_gpio, false);
+        awnn_destroy(context);
+        awnn_uninit();
+        mosfet_gpio_close(&pan_power_gpio);
+        mosfet_gpio_close(&tilt_power_gpio);
+        mosfet_gpio_close(&laser_gpio);
+        servo_pwm_close(&pan_pwm);
+        servo_pwm_close(&tilt_pwm);
+        camera.release();
+        return 0;
+    }
 
     struct InferenceShared inference_shared;
     pthread_mutex_init(&inference_shared.mutex, NULL);
