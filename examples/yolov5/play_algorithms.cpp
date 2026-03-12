@@ -20,8 +20,25 @@ static float point_distance(const cv::Point2f &a, const cv::Point2f &b) {
     return sqrtf(dx * dx + dy * dy);
 }
 
-static float compute_catch_radius(const Yolov5CatTrackInfo &cat) {
+static float compute_base_catch_radius(const Yolov5CatTrackInfo &cat) {
     return clampf_local(0.18f * (cat.width + cat.height), 10.0f, 42.0f);
+}
+
+static float compute_catch_radius(const Yolov5CatTrackInfo &cat, float cat_laser_dist) {
+    const float base = compute_base_catch_radius(cat);
+    const float bbox_diag = sqrtf(cat.width * cat.width + cat.height * cat.height);
+
+    // Lower confidence and larger cat-dot distance narrow the effective catch zone,
+    // while high confidence and close-range play can widen it for challenge.
+    const float confidence_norm = clampf_local((cat.confidence - 0.25f) / 0.60f, 0.0f, 1.0f);
+    const float confidence_scale = 0.90f + 0.25f * confidence_norm;
+
+    const float near_dist = 1.1f * bbox_diag;
+    const float far_dist = 2.2f * bbox_diag + 1.0f;
+    const float close_norm = 1.0f - clampf_local((cat_laser_dist - near_dist) / (far_dist - near_dist), 0.0f, 1.0f);
+    const float distance_scale = 0.88f + 0.20f * close_norm;
+
+    return clampf_local(base * confidence_scale * distance_scale, 8.0f, 52.0f);
 }
 
 static cv::Point2f clamp_point_to_frame(const cv::Point2f &p, int frame_w, int frame_h) {
@@ -217,7 +234,7 @@ static void update_engagement_score(struct CatPlayState *state, const cv::Point2
     float signal = clampf_local(reaction / 25.0f, 0.0f, 1.0f);
 
     // Boost engagement when cat goes for the dot while this algorithm is active.
-    const float catch_radius = compute_catch_radius(cat);
+    const float catch_radius = compute_catch_radius(cat, point_distance(cat_center, laser));
     if (d <= catch_radius) {
         signal = clampf_local(signal + 0.35f, 0.0f, 1.0f);
     }
@@ -258,6 +275,7 @@ static int maybe_build_near_miss_tease_target(
     struct CatPlayState *state,
     const Yolov5CatTrackInfo &cat,
     const cv::Point2f &cat_center,
+    const cv::Point2f &laser,
     int frame_w,
     int frame_h,
     float dt_sec,
@@ -277,7 +295,7 @@ static int maybe_build_near_miss_tease_target(
         return 1;
     }
 
-    const float radius = compute_catch_radius(cat) * state->near_miss_radius_scale;
+    const float radius = compute_catch_radius(cat, point_distance(cat_center, laser)) * state->near_miss_radius_scale;
     state->near_miss_angle_rad += (float)state->near_miss_direction * dt_sec * 11.0f;
     cv::Point2f tease_point(
         cat_center.x + cosf(state->near_miss_angle_rad) * radius,
@@ -316,7 +334,7 @@ static void maybe_flip_oval_direction_on_catch(struct CatPlayState *state,
     state->oval_direction_cooldown_sec = clampf_local(state->oval_direction_cooldown_sec - dt_sec, 0.0f, 2.0f);
 
     // "Trying to catch" heuristic: laser gets very close to cat center.
-    const float catch_radius = compute_catch_radius(cat);
+    const float catch_radius = compute_catch_radius(cat, point_distance(cat_center, laser));
     if (point_distance(cat_center, laser) > catch_radius || state->oval_direction_cooldown_sec > 0.0f) {
         return;
     }
@@ -411,7 +429,7 @@ cv::Point2f build_cat_play_target(
         maybe_start_near_miss_tease(state, cat, dt_sec);
 
         cv::Point2f tease_target(0.0f, 0.0f);
-        if (maybe_build_near_miss_tease_target(state, cat, cat_center, frame_w, frame_h, dt_sec, algo_name_out, &tease_target)) {
+        if (maybe_build_near_miss_tease_target(state, cat, cat_center, laser, frame_w, frame_h, dt_sec, algo_name_out, &tease_target)) {
             return tease_target;
         }
 
