@@ -205,6 +205,43 @@ static void apply_actuation(AppRuntime *rt, const ActuationCommand *cmd) {
     }
 }
 
+static void engage_camera_deadman_if_needed(AppRuntime *rt) {
+    if (rt->cfg.dry_run || rt->deadman_active) {
+        return;
+    }
+    if (difftime(time(NULL), rt->last_frame_time) <= 2.0) {
+        return;
+    }
+
+    servo_pwm_set_angle(&rt->pan_pwm, 0.0f);
+    servo_pwm_set_angle(&rt->tilt_pwm, 0.0f);
+    mosfet_gpio_set(&rt->pan_power_gpio, false);
+    mosfet_gpio_set(&rt->tilt_power_gpio, false);
+    mosfet_gpio_set(&rt->laser_gpio, false);
+
+    rt->servo_rails_powered = 0;
+    rt->deadman_active = 1;
+    debug_trace_log(&rt->trace, DEBUG_LOG_WARN, "SAFETY", "Deadman engaged: camera stalled, servo rails powered off");
+}
+
+static int clear_camera_deadman_if_needed(AppRuntime *rt) {
+    if (rt->cfg.dry_run || !rt->deadman_active || rt->servo_rails_powered) {
+        return 0;
+    }
+
+    if (mosfet_gpio_set(&rt->pan_power_gpio, true) < 0 ||
+        mosfet_gpio_set(&rt->tilt_power_gpio, true) < 0) {
+        debug_trace_log(&rt->trace, DEBUG_LOG_ERROR, "SAFETY", "Deadman recovery failed: unable to re-enable servo rails");
+        return -1;
+    }
+
+    mosfet_gpio_set(&rt->laser_gpio, true);
+    rt->servo_rails_powered = 1;
+    rt->deadman_active = 0;
+    debug_trace_log(&rt->trace, DEBUG_LOG_INFO, "SAFETY", "Deadman cleared: camera recovered, servo rails re-enabled");
+    return 0;
+}
+
 int app_run_loop(AppRuntime *rt, volatile sig_atomic_t *stop_flag) {
     InferenceThreadArgs worker_args = {
         rt->context,
@@ -225,6 +262,12 @@ int app_run_loop(AppRuntime *rt, volatile sig_atomic_t *stop_flag) {
             if (rt->replay.enabled) {
                 break;
             }
+            engage_camera_deadman_if_needed(rt);
+            usleep(100000);
+            continue;
+        }
+
+        if (clear_camera_deadman_if_needed(rt) != 0) {
             usleep(100000);
             continue;
         }
