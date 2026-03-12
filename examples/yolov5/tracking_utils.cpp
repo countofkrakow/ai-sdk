@@ -142,6 +142,26 @@ static float bbox_iou(const Yolov5CatTrackInfo &a, const Yolov5CatTrackInfo &b) 
     return inter / union_area;
 }
 
+
+
+static cv::Point2f bbox_center(const Yolov5CatTrackInfo &b) {
+    return cv::Point2f(b.x + b.width * 0.5f, b.y + b.height * 0.5f);
+}
+
+static float compute_track_selection_score(const MultiCatTrackerState *state, const MultiCatTrackEntry &track) {
+    const float confidence_score = clampf(track.box.confidence, 0.0f, 1.0f);
+    const float age_score = clampf((float)track.age_frames / 24.0f, 0.0f, 1.0f);
+    const float stability_score = clampf((float)track.consecutive_matches / 12.0f, 0.0f, 1.0f) *
+                                  (1.0f - clampf((float)track.missed_frames / 12.0f, 0.0f, 1.0f));
+
+    float continuity_score = 0.5f;
+    if (state->has_last_active_center) {
+        const float d = cv::norm(bbox_center(track.box) - state->last_active_center);
+        continuity_score = 1.0f - clampf(d / 220.0f, 0.0f, 1.0f);
+    }
+
+    return 0.48f * confidence_score + 0.22f * age_score + 0.20f * stability_score + 0.10f * continuity_score;
+}
 void init_multi_cat_tracker_state(MultiCatTrackerState *state) {
     if (state == NULL) {
         return;
@@ -149,10 +169,14 @@ void init_multi_cat_tracker_state(MultiCatTrackerState *state) {
     state->initialized = 1;
     state->next_track_id = 1;
     state->active_track_id = -1;
+    state->has_last_active_center = 0;
+    state->last_active_center = cv::Point2f(0.0f, 0.0f);
     for (int i = 0; i < YOLOV5_MAX_CAT_DETECTIONS; ++i) {
         state->tracks[i].active = 0;
         state->tracks[i].track_id = 0;
         state->tracks[i].missed_frames = 0;
+        state->tracks[i].age_frames = 0;
+        state->tracks[i].consecutive_matches = 0;
         state->tracks[i].box.has_cat = 0;
         state->tracks[i].box.confidence = 0.0f;
         state->tracks[i].box.x = 0.0f;
@@ -192,6 +216,8 @@ Yolov5CatTrackInfo update_multi_cat_tracker_and_get_active(MultiCatTrackerState 
         if (best_di >= 0 && best_iou >= 0.2f) {
             state->tracks[ti].box = detections->cats[best_di];
             state->tracks[ti].missed_frames = 0;
+            state->tracks[ti].age_frames++;
+            state->tracks[ti].consecutive_matches++;
             det_used[best_di] = 1;
             track_matched[ti] = 1;
         }
@@ -201,9 +227,13 @@ Yolov5CatTrackInfo update_multi_cat_tracker_and_get_active(MultiCatTrackerState 
         if (!state->tracks[ti].active) continue;
         if (track_matched[ti]) continue;
         state->tracks[ti].missed_frames++;
+        state->tracks[ti].age_frames++;
+        state->tracks[ti].consecutive_matches = 0;
         if (state->tracks[ti].missed_frames > 12) {
             if (state->active_track_id == state->tracks[ti].track_id) {
                 state->active_track_id = -1;
+    state->has_last_active_center = 0;
+    state->last_active_center = cv::Point2f(0.0f, 0.0f);
             }
             state->tracks[ti].active = 0;
         }
@@ -226,30 +256,38 @@ Yolov5CatTrackInfo update_multi_cat_tracker_and_get_active(MultiCatTrackerState 
         state->tracks[slot].active = 1;
         state->tracks[slot].track_id = state->next_track_id++;
         state->tracks[slot].missed_frames = 0;
+        state->tracks[slot].age_frames = 1;
+        state->tracks[slot].consecutive_matches = 1;
         state->tracks[slot].box = detections->cats[di];
     }
 
     for (int ti = 0; ti < YOLOV5_MAX_CAT_DETECTIONS; ++ti) {
         if (!state->tracks[ti].active) continue;
         if (state->tracks[ti].track_id == state->active_track_id) {
+            state->has_last_active_center = 1;
+            state->last_active_center = bbox_center(state->tracks[ti].box);
             return state->tracks[ti].box;
         }
     }
 
-    float best_conf = -1.0f;
+    float best_score = -1.0f;
     int best_ti = -1;
     for (int ti = 0; ti < YOLOV5_MAX_CAT_DETECTIONS; ++ti) {
         if (!state->tracks[ti].active) continue;
-        if (state->tracks[ti].box.confidence > best_conf) {
-            best_conf = state->tracks[ti].box.confidence;
+        const float score = compute_track_selection_score(state, state->tracks[ti]);
+        if (score > best_score) {
+            best_score = score;
             best_ti = ti;
         }
     }
     if (best_ti >= 0) {
         state->active_track_id = state->tracks[best_ti].track_id;
+        state->has_last_active_center = 1;
+        state->last_active_center = bbox_center(state->tracks[best_ti].box);
         return state->tracks[best_ti].box;
     }
 
+    state->has_last_active_center = 0;
     return none;
 }
 

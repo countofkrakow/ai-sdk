@@ -25,6 +25,8 @@ struct MultiCatTrackEntry {
     int active;
     int track_id;
     int missed_frames;
+    int age_frames;
+    int consecutive_matches;
     Yolov5CatTrackInfo box;
 };
 
@@ -32,6 +34,8 @@ struct MultiCatTrackerState {
     int initialized;
     int next_track_id;
     int active_track_id;
+    int has_last_active_center;
+    cv::Point2f last_active_center;
     MultiCatTrackEntry tracks[YOLOV5_MAX_CAT_DETECTIONS];
 };
 
