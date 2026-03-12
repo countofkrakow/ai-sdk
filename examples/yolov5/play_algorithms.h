@@ -22,6 +22,12 @@ enum ZigZagPhase {
     ZIGZAG_RETURN = 3,
 };
 
+enum NearMissTeasePhase {
+    NEAR_MISS_OFF = 0,
+    NEAR_MISS_BURST = 1,
+    NEAR_MISS_PAUSE = 2,
+};
+
 struct CatPlayState {
     enum CatPlayAlgorithm algorithm;
 
@@ -40,6 +46,16 @@ struct CatPlayState {
     float oval_phase;
     int oval_direction;
     float oval_direction_cooldown_sec;
+
+    enum NearMissTeasePhase near_miss_phase;
+    int near_miss_passes_remaining;
+    float near_miss_angle_rad;
+    float near_miss_radius_scale;
+    float near_miss_segment_time_sec;
+    float near_miss_segment_duration_sec;
+    float near_miss_pause_time_sec;
+    int near_miss_direction;
+    cv::Point2f near_miss_pause_point;
 
     enum StareDartPhase stare_dart_phase;
     float stare_dart_hold_time_sec;

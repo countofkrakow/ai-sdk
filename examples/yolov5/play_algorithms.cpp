@@ -20,6 +20,10 @@ static float point_distance(const cv::Point2f &a, const cv::Point2f &b) {
     return sqrtf(dx * dx + dy * dy);
 }
 
+static float compute_catch_radius(const Yolov5CatTrackInfo &cat) {
+    return clampf_local(0.18f * (cat.width + cat.height), 10.0f, 42.0f);
+}
+
 static cv::Point2f clamp_point_to_frame(const cv::Point2f &p, int frame_w, int frame_h) {
     return cv::Point2f(
         clampf_local(p.x, 0.0f, (float)frame_w - 1.0f),
@@ -176,7 +180,7 @@ static void update_engagement_score(struct CatPlayState *state, const cv::Point2
     float signal = clampf_local(reaction / 25.0f, 0.0f, 1.0f);
 
     // Boost engagement when cat goes for the dot while this algorithm is active.
-    const float catch_radius = clampf_local(0.18f * (cat.width + cat.height), 10.0f, 42.0f);
+    const float catch_radius = compute_catch_radius(cat);
     if (d <= catch_radius) {
         signal = clampf_local(signal + 0.35f, 0.0f, 1.0f);
     }
@@ -187,6 +191,86 @@ static void update_engagement_score(struct CatPlayState *state, const cv::Point2
         0.9f * state->algorithm_engagement_scores[algo_index] + 0.1f * signal;
 }
 
+static void maybe_start_near_miss_tease(
+    struct CatPlayState *state,
+    const Yolov5CatTrackInfo &cat,
+    float dt_sec) {
+    if (state->near_miss_phase != NEAR_MISS_OFF) {
+        return;
+    }
+
+    // Trigger occasionally during oval play; stronger chance when engagement is low.
+    const float low_engagement_boost = clampf_local(0.45f - state->engagement_score, 0.0f, 0.45f);
+    const float trigger_prob_per_sec = 0.08f + low_engagement_boost;
+    if (random_float_range(0.0f, 1.0f) > trigger_prob_per_sec * clampf_local(dt_sec, 0.0f, 1.0f)) {
+        return;
+    }
+
+    state->near_miss_phase = NEAR_MISS_BURST;
+    state->near_miss_passes_remaining = 3 + (rand() % 4); // 3-6 quick passes.
+    state->near_miss_angle_rad = random_float_range(0.0f, 6.2831853f);
+    state->near_miss_radius_scale = random_float_range(1.1f, 1.4f);
+    state->near_miss_segment_time_sec = 0.0f;
+    state->near_miss_segment_duration_sec = random_float_range(0.16f, 0.34f);
+    state->near_miss_pause_time_sec = 0.0f;
+    state->near_miss_direction = (rand() % 2 == 0) ? 1 : -1;
+    (void)cat;
+}
+
+static int maybe_build_near_miss_tease_target(
+    struct CatPlayState *state,
+    const Yolov5CatTrackInfo &cat,
+    const cv::Point2f &cat_center,
+    int frame_w,
+    int frame_h,
+    float dt_sec,
+    const char **algo_name_out,
+    cv::Point2f *target_out) {
+    if (state->near_miss_phase == NEAR_MISS_OFF) {
+        return 0;
+    }
+
+    if (state->near_miss_phase == NEAR_MISS_PAUSE) {
+        state->near_miss_pause_time_sec -= dt_sec;
+        *algo_name_out = "near_miss_tease_pause";
+        *target_out = clamp_point_to_frame(state->near_miss_pause_point, frame_w, frame_h);
+        if (state->near_miss_pause_time_sec <= 0.0f) {
+            state->near_miss_phase = NEAR_MISS_OFF;
+        }
+        return 1;
+    }
+
+    const float radius = compute_catch_radius(cat) * state->near_miss_radius_scale;
+    state->near_miss_angle_rad += (float)state->near_miss_direction * dt_sec * 11.0f;
+    cv::Point2f tease_point(
+        cat_center.x + cosf(state->near_miss_angle_rad) * radius,
+        cat_center.y + sinf(state->near_miss_angle_rad) * radius);
+    tease_point = clamp_point_to_frame(tease_point, frame_w, frame_h);
+
+    state->near_miss_segment_time_sec += dt_sec;
+    if (state->near_miss_segment_time_sec >= state->near_miss_segment_duration_sec) {
+        state->near_miss_segment_time_sec = 0.0f;
+        state->near_miss_segment_duration_sec = random_float_range(0.16f, 0.34f);
+        state->near_miss_passes_remaining--;
+        if ((rand() % 100) < 65) {
+            state->near_miss_direction = -state->near_miss_direction;
+        }
+    }
+
+    if (state->near_miss_passes_remaining <= 0) {
+        state->near_miss_phase = NEAR_MISS_PAUSE;
+        state->near_miss_pause_time_sec = random_float_range(0.35f, 0.9f);
+        state->near_miss_pause_point = tease_point;
+        *algo_name_out = "near_miss_tease_pause";
+        *target_out = tease_point;
+        return 1;
+    }
+
+    *algo_name_out = "near_miss_tease";
+    *target_out = tease_point;
+    return 1;
+}
+
 static void maybe_flip_oval_direction_on_catch(struct CatPlayState *state,
                                                const Yolov5CatTrackInfo &cat,
                                                const cv::Point2f &cat_center,
@@ -195,7 +279,7 @@ static void maybe_flip_oval_direction_on_catch(struct CatPlayState *state,
     state->oval_direction_cooldown_sec = clampf_local(state->oval_direction_cooldown_sec - dt_sec, 0.0f, 2.0f);
 
     // "Trying to catch" heuristic: laser gets very close to cat center.
-    const float catch_radius = clampf_local(0.18f * (cat.width + cat.height), 10.0f, 42.0f);
+    const float catch_radius = compute_catch_radius(cat);
     if (point_distance(cat_center, laser) > catch_radius || state->oval_direction_cooldown_sec > 0.0f) {
         return;
     }
@@ -225,6 +309,15 @@ void init_cat_play_state(struct CatPlayState *state) {
     state->oval_phase = 0.0f;
     state->oval_direction = 1;
     state->oval_direction_cooldown_sec = 0.0f;
+    state->near_miss_phase = NEAR_MISS_OFF;
+    state->near_miss_passes_remaining = 0;
+    state->near_miss_angle_rad = 0.0f;
+    state->near_miss_radius_scale = 1.2f;
+    state->near_miss_segment_time_sec = 0.0f;
+    state->near_miss_segment_duration_sec = 0.0f;
+    state->near_miss_pause_time_sec = 0.0f;
+    state->near_miss_direction = 1;
+    state->near_miss_pause_point = cv::Point2f(0.0f, 0.0f);
     state->stare_dart_phase = STARE_DART_HOLD;
     state->stare_dart_hold_time_sec = 0.0f;
     state->stare_dart_hold_point = cv::Point2f(0.0f, 0.0f);
@@ -272,8 +365,15 @@ cv::Point2f build_cat_play_target(
     }
 
     if (state->algorithm == CAT_PLAY_OVAL) {
-        *algo_name_out = "oval";
         maybe_flip_oval_direction_on_catch(state, cat, cat_center, laser, dt_sec);
+        maybe_start_near_miss_tease(state, cat, dt_sec);
+
+        cv::Point2f tease_target(0.0f, 0.0f);
+        if (maybe_build_near_miss_tease_target(state, cat, cat_center, frame_w, frame_h, dt_sec, algo_name_out, &tease_target)) {
+            return tease_target;
+        }
+
+        *algo_name_out = "oval";
         const float direction = (state->oval_direction >= 0) ? 1.0f : -1.0f;
         state->oval_phase += direction * 0.18f;
         return build_oval_target(cat, state->oval_phase, frame_w, frame_h);
