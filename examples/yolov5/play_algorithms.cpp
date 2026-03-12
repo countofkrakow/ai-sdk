@@ -172,6 +172,25 @@ static void maybe_transition_with_probability(struct CatPlayState *state, int pe
     }
 }
 
+
+static void apply_novelty_decay_recovery(struct CatPlayState *state, float dt_sec) {
+    // Session-level novelty memory:
+    // - stale algorithms slowly lose weight
+    // - all algorithms drift toward a neutral baseline over time
+    // - currently active algorithm gets a mild fatigue penalty to avoid lock-in
+    const float baseline = 0.50f;
+    const float recovery_rate = 0.04f;
+    const float stale_decay_rate = 0.012f;
+    const float active_fatigue_rate = 0.02f;
+
+    for (int i = 0; i < 3; ++i) {
+        float score = state->algorithm_engagement_scores[i];
+        score += (baseline - score) * recovery_rate * dt_sec;
+        score -= ((i == (int)state->algorithm) ? active_fatigue_rate : stale_decay_rate) * dt_sec;
+        state->algorithm_engagement_scores[i] = clampf_local(score, 0.05f, 1.0f);
+    }
+}
+
 static void update_engagement_score(struct CatPlayState *state, const cv::Point2f &cat_center, const cv::Point2f &laser, const Yolov5CatTrackInfo &cat) {
     // Heuristic: engagement increases when cat-laser distance changes (cat reacts).
     float d = point_distance(cat_center, laser);
@@ -341,6 +360,7 @@ cv::Point2f build_cat_play_target(
     const cv::Point2f cat_center(cat.x + cat.width * 0.5f, cat.y + cat.height * 0.5f);
 
     update_engagement_score(state, cat_center, laser, cat);
+    apply_novelty_decay_recovery(state, dt_sec);
 
     // Anti-fatigue: every ~120s of active play, insert a short calm interval.
     state->session_time_sec += dt_sec;
