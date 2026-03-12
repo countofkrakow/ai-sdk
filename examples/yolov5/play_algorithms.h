@@ -33,6 +33,9 @@ struct CatPlayState {
 
     cv::Point2f last_cat_center;
     float cat_still_time_sec;
+    int velocity_initialized;
+    cv::Point2f prev_velocity_cat_center;
+    float cat_speed_px_per_sec_ema;
 
     // Engagement: larger means cat is actively reacting to laser motion.
     float engagement_score;

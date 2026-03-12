@@ -191,6 +191,24 @@ static void apply_novelty_decay_recovery(struct CatPlayState *state, float dt_se
     }
 }
 
+
+static void update_cat_velocity_signal(struct CatPlayState *state, const cv::Point2f &cat_center, float dt_sec) {
+    if (dt_sec <= 1e-5f) {
+        return;
+    }
+
+    if (!state->velocity_initialized) {
+        state->velocity_initialized = 1;
+        state->prev_velocity_cat_center = cat_center;
+        state->cat_speed_px_per_sec_ema = 0.0f;
+        return;
+    }
+
+    float inst_speed = point_distance(cat_center, state->prev_velocity_cat_center) / dt_sec;
+    state->prev_velocity_cat_center = cat_center;
+    state->cat_speed_px_per_sec_ema = 0.88f * state->cat_speed_px_per_sec_ema + 0.12f * inst_speed;
+}
+
 static void update_engagement_score(struct CatPlayState *state, const cv::Point2f &cat_center, const cv::Point2f &laser, const Yolov5CatTrackInfo &cat) {
     // Heuristic: engagement increases when cat-laser distance changes (cat reacts).
     float d = point_distance(cat_center, laser);
@@ -318,6 +336,9 @@ void init_cat_play_state(struct CatPlayState *state) {
     state->algorithm = CAT_PLAY_OVAL;
     state->last_cat_center = cv::Point2f(0.0f, 0.0f);
     state->cat_still_time_sec = 0.0f;
+    state->velocity_initialized = 0;
+    state->prev_velocity_cat_center = cv::Point2f(0.0f, 0.0f);
+    state->cat_speed_px_per_sec_ema = 0.0f;
     state->engagement_score = 0.0f;
     state->algorithm_engagement_scores[CAT_PLAY_OVAL] = 1.0f;
     state->algorithm_engagement_scores[CAT_PLAY_STARE_DART] = 1.0f;
@@ -360,6 +381,7 @@ cv::Point2f build_cat_play_target(
     const cv::Point2f cat_center(cat.x + cat.width * 0.5f, cat.y + cat.height * 0.5f);
 
     update_engagement_score(state, cat_center, laser, cat);
+    update_cat_velocity_signal(state, cat_center, dt_sec);
     apply_novelty_decay_recovery(state, dt_sec);
 
     // Anti-fatigue: every ~120s of active play, insert a short calm interval.
@@ -394,8 +416,18 @@ cv::Point2f build_cat_play_target(
         }
 
         *algo_name_out = "oval";
+        const float speed_norm = clampf_local(state->cat_speed_px_per_sec_ema / 220.0f, 0.0f, 1.0f);
         const float direction = (state->oval_direction >= 0) ? 1.0f : -1.0f;
-        state->oval_phase += direction * 0.18f;
+        const float oval_phase_step = 0.10f + 0.16f * speed_norm;
+        state->oval_phase += direction * oval_phase_step;
+
+        // If cat movement is low, occasionally bait with a dart pattern.
+        if (speed_norm < 0.25f && random_float_range(0.0f, 1.0f) < (0.02f * clampf_local(dt_sec * 30.0f, 0.0f, 2.0f))) {
+            state->algorithm = CAT_PLAY_STARE_DART;
+            state->stare_dart_phase = STARE_DART_HOLD;
+            state->stare_dart_hold_time_sec = random_float_range(2.0f, 6.0f);
+            state->stare_dart_hold_point = laser;
+        }
         return build_oval_target(cat, state->oval_phase, frame_w, frame_h);
     }
 
@@ -440,11 +472,13 @@ cv::Point2f build_cat_play_target(
         state->zigzag_phase_time_sec += dt_sec;
         const float amp_x = clampf_local(cat.width * 0.45f, 12.0f, 80.0f);
         const float amp_y = clampf_local(cat.height * 0.18f, 6.0f, 35.0f);
-        const float t = state->zigzag_phase_time_sec * 8.0f;
+        const float speed_norm = clampf_local(state->cat_speed_px_per_sec_ema / 220.0f, 0.0f, 1.0f);
+        const float t = state->zigzag_phase_time_sec * (6.0f + 6.0f * speed_norm);
         const float saw = (fmodf(t, 2.0f) < 1.0f) ? 1.0f : -1.0f;
         cv::Point2f p(state->zigzag_front_point.x + saw * amp_x,
                       state->zigzag_front_point.y + sinf(t * 1.7f) * amp_y);
-        if (state->zigzag_phase_time_sec >= 2.5f) {
+        const float shake_duration_sec = 3.2f - 1.6f * speed_norm;
+        if (state->zigzag_phase_time_sec >= shake_duration_sec) {
             state->zigzag_phase = ZIGZAG_RETREAT;
             state->zigzag_retreat_point = furthest_frame_corner_from_point(laser, frame_w, frame_h);
         }
