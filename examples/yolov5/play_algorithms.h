@@ -46,6 +46,9 @@ struct CatPlayState {
     float prev_cat_laser_dist;
     float session_time_sec;
     float calm_time_sec;
+    float close_chase_time_sec;
+    float hesitation_pause_time_sec;
+    float hesitation_cooldown_sec;
 
     // Oval-mode orbit state: direction is +1/-1 for cw/ccw style phase motion.
     float oval_phase;

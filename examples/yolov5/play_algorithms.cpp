@@ -382,6 +382,9 @@ void init_cat_play_state(struct CatPlayState *state) {
     state->prev_cat_laser_dist = 0.0f;
     state->session_time_sec = 0.0f;
     state->calm_time_sec = 0.0f;
+    state->close_chase_time_sec = 0.0f;
+    state->hesitation_pause_time_sec = 0.0f;
+    state->hesitation_cooldown_sec = 0.0f;
     state->oval_phase = 0.0f;
     state->oval_direction = 1;
     state->oval_direction_cooldown_sec = 0.0f;
@@ -429,6 +432,35 @@ cv::Point2f build_cat_play_target(
     if (state->calm_time_sec > 0.0f) {
         *algo_name_out = "calm_pause";
         state->calm_time_sec -= dt_sec;
+        return laser;
+    }
+
+    if (state->hesitation_cooldown_sec > 0.0f) {
+        state->hesitation_cooldown_sec = clampf_local(state->hesitation_cooldown_sec - dt_sec, 0.0f, 10.0f);
+    }
+
+    if (state->hesitation_pause_time_sec > 0.0f) {
+        *algo_name_out = "hesitation_pause";
+        state->hesitation_pause_time_sec -= dt_sec;
+        return laser;
+    }
+
+    const float catch_radius = compute_catch_radius(cat, point_distance(cat_center, laser));
+    const float speed_norm_for_hesitation = clampf_local(state->cat_speed_px_per_sec_ema / 220.0f, 0.0f, 1.0f);
+    const float chase_dist = point_distance(cat_center, laser);
+    const int high_speed_close_chase = (speed_norm_for_hesitation > 0.65f && chase_dist < (1.15f * catch_radius));
+
+    if (high_speed_close_chase) {
+        state->close_chase_time_sec += dt_sec;
+    } else {
+        state->close_chase_time_sec = clampf_local(state->close_chase_time_sec - dt_sec * 0.6f, 0.0f, 5.0f);
+    }
+
+    if (state->hesitation_cooldown_sec <= 0.0f && state->close_chase_time_sec >= 0.35f) {
+        state->hesitation_pause_time_sec = random_float_range(0.2f, 0.8f);
+        state->hesitation_cooldown_sec = random_float_range(1.4f, 2.4f);
+        state->close_chase_time_sec = 0.0f;
+        *algo_name_out = "hesitation_pause";
         return laser;
     }
 
