@@ -218,6 +218,8 @@ static void update_cat_velocity_signal(struct CatPlayState *state, const cv::Poi
         state->velocity_initialized = 1;
         state->prev_velocity_cat_center = cat_center;
         state->cat_speed_px_per_sec_ema = 0.0f;
+    state->was_within_catch_radius = 0;
+    state->recent_catch_attempt_score = 0.0f;
         return;
     }
 
@@ -234,10 +236,19 @@ static void update_engagement_score(struct CatPlayState *state, const cv::Point2
     float signal = clampf_local(reaction / 25.0f, 0.0f, 1.0f);
 
     // Boost engagement when cat goes for the dot while this algorithm is active.
-    const float catch_radius = compute_catch_radius(cat, point_distance(cat_center, laser));
-    if (d <= catch_radius) {
+    const float catch_radius = compute_catch_radius(cat, d);
+    const int within_catch_radius = (d <= catch_radius) ? 1 : 0;
+    const int catch_enter_event = (within_catch_radius && !state->was_within_catch_radius) ? 1 : 0;
+    state->was_within_catch_radius = within_catch_radius;
+
+    if (within_catch_radius) {
         signal = clampf_local(signal + 0.35f, 0.0f, 1.0f);
     }
+
+    // Track recent successful catch attempts (distance entering catch radius)
+    // to adapt near-miss burst/pause parameters.
+    state->recent_catch_attempt_score =
+        clampf_local(0.92f * state->recent_catch_attempt_score + 0.08f * (float)catch_enter_event, 0.0f, 1.0f);
 
     state->engagement_score = 0.9f * state->engagement_score + 0.1f * signal;
     const int algo_index = (int)state->algorithm;
@@ -261,7 +272,9 @@ static void maybe_start_near_miss_tease(
     }
 
     state->near_miss_phase = NEAR_MISS_BURST;
-    state->near_miss_passes_remaining = 3 + (rand() % 4); // 3-6 quick passes.
+    const float catch_success = clampf_local(state->recent_catch_attempt_score, 0.0f, 1.0f);
+    const int pass_bias = (int)floorf(0.5f + 3.0f * catch_success); // high success => longer tease runs.
+    state->near_miss_passes_remaining = 2 + (rand() % 3) + pass_bias; // adaptive ~2-7 passes.
     state->near_miss_angle_rad = random_float_range(0.0f, 6.2831853f);
     state->near_miss_radius_scale = random_float_range(1.1f, 1.4f);
     state->near_miss_segment_time_sec = 0.0f;
@@ -314,7 +327,10 @@ static int maybe_build_near_miss_tease_target(
 
     if (state->near_miss_passes_remaining <= 0) {
         state->near_miss_phase = NEAR_MISS_PAUSE;
-        state->near_miss_pause_time_sec = random_float_range(0.35f, 0.9f);
+        const float catch_success = clampf_local(state->recent_catch_attempt_score, 0.0f, 1.0f);
+        const float pause_min = 0.30f + 0.35f * (1.0f - catch_success);
+        const float pause_max = 0.65f + 0.55f * (1.0f - catch_success);
+        state->near_miss_pause_time_sec = random_float_range(pause_min, pause_max);
         state->near_miss_pause_point = tease_point;
         *algo_name_out = "near_miss_tease_pause";
         *target_out = tease_point;
@@ -357,6 +373,8 @@ void init_cat_play_state(struct CatPlayState *state) {
     state->velocity_initialized = 0;
     state->prev_velocity_cat_center = cv::Point2f(0.0f, 0.0f);
     state->cat_speed_px_per_sec_ema = 0.0f;
+    state->was_within_catch_radius = 0;
+    state->recent_catch_attempt_score = 0.0f;
     state->engagement_score = 0.0f;
     state->algorithm_engagement_scores[CAT_PLAY_OVAL] = 1.0f;
     state->algorithm_engagement_scores[CAT_PLAY_STARE_DART] = 1.0f;
