@@ -174,12 +174,19 @@ static enum CatPlayAlgorithm pick_engagement_ranked_alternate_algorithm(
     return CAT_PLAY_ZIGZAG_RETREAT;
 }
 
-static cv::Point2f build_oval_target(const Yolov5CatTrackInfo &cat, float phase, int frame_w, int frame_h) {
+static cv::Point2f build_oval_target(
+    const Yolov5CatTrackInfo &cat,
+    float phase,
+    int frame_w,
+    int frame_h,
+    float arc_scale) {
     const float center_x = cat.x + cat.width * 0.5f;
     const float center_y = cat.y + cat.height * 0.5f;
     const float margin_scale = 1.15f;
-    const float rx = clampf_local(cat.width * 0.5f * margin_scale, 12.0f, 140.0f);
-    const float ry = clampf_local(cat.height * 0.5f * margin_scale, 12.0f, 140.0f);
+    const float base_rx = clampf_local(cat.width * 0.5f * margin_scale, 12.0f, 140.0f);
+    const float base_ry = clampf_local(cat.height * 0.5f * margin_scale, 12.0f, 140.0f);
+    const float rx = clampf_local(base_rx * arc_scale, 10.0f, 220.0f);
+    const float ry = clampf_local(base_ry * arc_scale, 10.0f, 220.0f);
     return clamp_point_to_frame(cv::Point2f(center_x + rx * cosf(phase), center_y + ry * sinf(phase)), frame_w, frame_h);
 }
 
@@ -218,14 +225,17 @@ static void update_cat_velocity_signal(struct CatPlayState *state, const cv::Poi
         state->velocity_initialized = 1;
         state->prev_velocity_cat_center = cat_center;
         state->cat_speed_px_per_sec_ema = 0.0f;
-    state->was_within_catch_radius = 0;
-    state->was_near_target_zone = 0;
-    state->recent_catch_attempt_score = 0.0f;
-    state->prev_engagement_cat_center = cv::Point2f(0.0f, 0.0f);
-    state->prev_engagement_laser_point = cv::Point2f(0.0f, 0.0f);
-    state->engagement_motion_initialized = 0;
-    state->dwell_near_target_time_sec = 0.0f;
-    state->disengaged_time_sec = 0.0f;
+        state->was_within_catch_radius = 0;
+        state->was_near_target_zone = 0;
+        state->recent_catch_attempt_score = 0.0f;
+        state->recent_catch_streak = 0;
+        state->recent_miss_streak = 0;
+        state->challenge_ladder_level = 0.0f;
+        state->prev_engagement_cat_center = cv::Point2f(0.0f, 0.0f);
+        state->prev_engagement_laser_point = cv::Point2f(0.0f, 0.0f);
+        state->engagement_motion_initialized = 0;
+        state->dwell_near_target_time_sec = 0.0f;
+        state->disengaged_time_sec = 0.0f;
         return;
     }
 
@@ -303,6 +313,24 @@ static void update_engagement_score(struct CatPlayState *state, const cv::Point2
     state->recent_catch_attempt_score =
         clampf_local(0.92f * state->recent_catch_attempt_score + 0.08f * (float)catch_enter_event, 0.0f, 1.0f);
 
+    if (catch_enter_event) {
+        state->recent_catch_streak = (state->recent_catch_streak < 10) ? (state->recent_catch_streak + 1) : 10;
+        state->recent_miss_streak = (state->recent_miss_streak > 0) ? (state->recent_miss_streak - 1) : 0;
+    } else if (near_enter_event && !within_catch_radius) {
+        state->recent_miss_streak = (state->recent_miss_streak < 12) ? (state->recent_miss_streak + 1) : 12;
+        state->recent_catch_streak = (state->recent_catch_streak > 0) ? (state->recent_catch_streak - 1) : 0;
+    } else {
+        state->recent_catch_streak = (state->recent_catch_streak > 0) ? (state->recent_catch_streak - 1) : 0;
+        state->recent_miss_streak = (state->recent_miss_streak > 0) ? (state->recent_miss_streak - 1) : 0;
+    }
+
+    const float ladder_target = clampf_local(
+        0.20f * (float)state->recent_catch_streak - 0.16f * (float)state->recent_miss_streak,
+        -1.0f,
+        1.0f);
+    state->challenge_ladder_level =
+        clampf_local(0.90f * state->challenge_ladder_level + 0.10f * ladder_target, -1.0f, 1.0f);
+
     state->engagement_score = 0.9f * state->engagement_score + 0.1f * signal;
     const int algo_index = (int)state->algorithm;
     state->algorithm_engagement_scores[algo_index] =
@@ -364,10 +392,13 @@ static void maybe_start_near_miss_tease(
 
     state->near_miss_phase = NEAR_MISS_BURST;
     const float catch_success = clampf_local(state->recent_catch_attempt_score, 0.0f, 1.0f);
+    const float challenge = clampf_local(state->challenge_ladder_level, -1.0f, 1.0f);
     const int pass_bias = (int)floorf(0.5f + 3.0f * catch_success); // high success => longer tease runs.
     state->near_miss_passes_remaining = 2 + (rand() % 3) + pass_bias; // adaptive ~2-7 passes.
     state->near_miss_angle_rad = random_float_range(0.0f, 6.2831853f);
-    state->near_miss_radius_scale = random_float_range(1.1f, 1.4f);
+    const float radius_min = 1.10f - 0.10f * challenge;
+    const float radius_max = 1.40f - 0.14f * challenge;
+    state->near_miss_radius_scale = random_float_range(radius_min, radius_max);
     state->near_miss_segment_time_sec = 0.0f;
     state->near_miss_segment_duration_sec = random_float_range(0.16f, 0.34f);
     state->near_miss_pause_time_sec = 0.0f;
@@ -419,8 +450,9 @@ static int maybe_build_near_miss_tease_target(
     if (state->near_miss_passes_remaining <= 0) {
         state->near_miss_phase = NEAR_MISS_PAUSE;
         const float catch_success = clampf_local(state->recent_catch_attempt_score, 0.0f, 1.0f);
-        const float pause_min = 0.30f + 0.35f * (1.0f - catch_success);
-        const float pause_max = 0.65f + 0.55f * (1.0f - catch_success);
+        const float challenge = clampf_local(state->challenge_ladder_level, -1.0f, 1.0f);
+        const float pause_min = (0.30f + 0.35f * (1.0f - catch_success)) * (1.0f - 0.22f * challenge);
+        const float pause_max = (0.65f + 0.55f * (1.0f - catch_success)) * (1.0f - 0.26f * challenge);
         state->near_miss_pause_time_sec = random_float_range(pause_min, pause_max);
         state->near_miss_pause_point = tease_point;
         *algo_name_out = "near_miss_tease_pause";
@@ -467,6 +499,9 @@ void init_cat_play_state(struct CatPlayState *state) {
     state->was_within_catch_radius = 0;
     state->was_near_target_zone = 0;
     state->recent_catch_attempt_score = 0.0f;
+    state->recent_catch_streak = 0;
+    state->recent_miss_streak = 0;
+    state->challenge_ladder_level = 0.0f;
     state->prev_engagement_cat_center = cv::Point2f(0.0f, 0.0f);
     state->prev_engagement_laser_point = cv::Point2f(0.0f, 0.0f);
     state->engagement_motion_initialized = 0;
@@ -615,8 +650,11 @@ cv::Point2f build_cat_play_target(
 
         *algo_name_out = "oval";
         const float speed_norm = clampf_local(state->cat_speed_px_per_sec_ema / 220.0f, 0.0f, 1.0f);
+        const float challenge = clampf_local(state->challenge_ladder_level, -1.0f, 1.0f);
         const float direction = (state->oval_direction >= 0) ? 1.0f : -1.0f;
-        const float oval_phase_step = (0.10f + 0.16f * speed_norm) * oval_speed_scale;
+        const float oval_challenge_speed = clampf_local(1.0f + 0.30f * challenge, 0.70f, 1.35f);
+        const float oval_phase_step = (0.10f + 0.16f * speed_norm) * oval_speed_scale * oval_challenge_speed;
+        const float oval_arc_scale = clampf_local(1.12f - 0.28f * challenge, 0.75f, 1.35f);
         state->oval_phase += direction * oval_phase_step;
 
         // If cat movement is low, occasionally bait with a dart pattern.
@@ -626,7 +664,7 @@ cv::Point2f build_cat_play_target(
             state->stare_dart_hold_time_sec = random_float_range(2.0f, 6.0f);
             state->stare_dart_hold_point = laser;
         }
-        return build_oval_target(cat, state->oval_phase, frame_w, frame_h);
+        return build_oval_target(cat, state->oval_phase, frame_w, frame_h, oval_arc_scale);
     }
 
     if (state->algorithm == CAT_PLAY_STARE_DART) {
@@ -668,14 +706,17 @@ cv::Point2f build_cat_play_target(
 
     if (state->zigzag_phase == ZIGZAG_SHAKE) {
         state->zigzag_phase_time_sec += dt_sec;
-        const float amp_x = clampf_local(cat.width * 0.45f, 12.0f, 80.0f);
-        const float amp_y = clampf_local(cat.height * 0.18f, 6.0f, 35.0f);
+        const float challenge = clampf_local(state->challenge_ladder_level, -1.0f, 1.0f);
+        const float zigzag_arc_scale = clampf_local(1.15f - 0.30f * challenge, 0.72f, 1.40f);
+        const float amp_x = clampf_local(clampf_local(cat.width * 0.45f, 12.0f, 80.0f) * zigzag_arc_scale, 10.0f, 120.0f);
+        const float amp_y = clampf_local(clampf_local(cat.height * 0.18f, 6.0f, 35.0f) * zigzag_arc_scale, 5.0f, 55.0f);
         const float speed_norm = clampf_local(state->cat_speed_px_per_sec_ema / 220.0f, 0.0f, 1.0f);
-        const float t = state->zigzag_phase_time_sec * (6.0f + 6.0f * speed_norm) * zigzag_speed_scale;
+        const float zigzag_challenge_speed = clampf_local(1.0f + 0.32f * challenge, 0.68f, 1.40f);
+        const float t = state->zigzag_phase_time_sec * (6.0f + 6.0f * speed_norm) * zigzag_speed_scale * zigzag_challenge_speed;
         const float saw = (fmodf(t, 2.0f) < 1.0f) ? 1.0f : -1.0f;
         cv::Point2f p(state->zigzag_front_point.x + saw * amp_x,
                       state->zigzag_front_point.y + sinf(t * 1.7f) * amp_y);
-        const float shake_duration_sec = (3.2f - 1.6f * speed_norm) * zigzag_duration_scale;
+        const float shake_duration_sec = (3.2f - 1.6f * speed_norm) * zigzag_duration_scale * (1.0f - 0.20f * challenge);
         if (state->zigzag_phase_time_sec >= shake_duration_sec) {
             state->zigzag_phase = ZIGZAG_RETREAT;
             state->zigzag_retreat_point = furthest_frame_corner_from_point(laser, frame_w, frame_h);

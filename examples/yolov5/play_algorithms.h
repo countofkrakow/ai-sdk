@@ -46,6 +46,9 @@ struct CatPlayState {
     int was_within_catch_radius;
     int was_near_target_zone;
     float recent_catch_attempt_score;
+    int recent_catch_streak;
+    int recent_miss_streak;
+    float challenge_ladder_level;
     cv::Point2f prev_engagement_cat_center;
     cv::Point2f prev_engagement_laser_point;
     int engagement_motion_initialized;
