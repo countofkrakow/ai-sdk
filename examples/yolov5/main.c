@@ -121,6 +121,21 @@ static void retarget_random_scan(struct RandomScanState *scan_state) {
     scan_state->frames_until_retarget = 25 + (rand() % 70);
 }
 
+
+
+static void apply_confidence_aware_servo_smoothing(
+    ServoState *servo_state,
+    const ServoState *pre_update_state,
+    float confidence) {
+    // Lower confidence -> heavier damping to reduce jitter.
+    // Higher confidence -> more responsive movement.
+    const float conf_norm = clampf((confidence - 0.25f) / 0.65f, 0.0f, 1.0f);
+    const float alpha = 0.22f + 0.68f * conf_norm;
+
+    servo_state->pan_deg = pre_update_state->pan_deg + alpha * (servo_state->pan_deg - pre_update_state->pan_deg);
+    servo_state->tilt_deg = pre_update_state->tilt_deg + alpha * (servo_state->tilt_deg - pre_update_state->tilt_deg);
+}
+
 static void update_random_scan_servo(
     ServoState *servo_state,
     struct RandomScanState *scan_state,
@@ -524,7 +539,9 @@ int main(int argc, char **argv) {
             cv::Point2f frame_center((float)frame.cols * 0.5f, (float)frame.rows * 0.5f);
             cv::Point2f cat_center(smoothed.x + smoothed.width * 0.5f,
                                    smoothed.y + smoothed.height * 0.5f);
+            ServoState pre_update_state = servo_state;
             update_servo_state(&servo_state, frame_center, cat_center, frame.cols, frame.rows);
+            apply_confidence_aware_servo_smoothing(&servo_state, &pre_update_state, smoothed.confidence);
             servo_pwm_set_angle(&pan_pwm, servo_state.pan_deg);
             servo_pwm_set_angle(&tilt_pwm, servo_state.tilt_deg);
 
