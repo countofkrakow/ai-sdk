@@ -24,13 +24,13 @@ static float compute_base_catch_radius(const Yolov5CatTrackInfo &cat) {
     return clampf_local(0.18f * (cat.width + cat.height), 10.0f, 42.0f);
 }
 
-static float compute_catch_radius(const Yolov5CatTrackInfo &cat, float cat_laser_dist) {
+static float compute_catch_radius(const Yolov5CatTrackInfo &cat, float cat_laser_dist, float behavior_confidence) {
     const float base = compute_base_catch_radius(cat);
     const float bbox_diag = sqrtf(cat.width * cat.width + cat.height * cat.height);
 
     // Lower confidence and larger cat-dot distance narrow the effective catch zone,
     // while high confidence and close-range play can widen it for challenge.
-    const float confidence_norm = clampf_local((cat.confidence - 0.25f) / 0.60f, 0.0f, 1.0f);
+    const float confidence_norm = clampf_local((behavior_confidence - 0.25f) / 0.60f, 0.0f, 1.0f);
     const float confidence_scale = 0.90f + 0.25f * confidence_norm;
 
     const float near_dist = 1.1f * bbox_diag;
@@ -244,7 +244,13 @@ static void update_cat_velocity_signal(struct CatPlayState *state, const cv::Poi
     state->cat_speed_px_per_sec_ema = 0.88f * state->cat_speed_px_per_sec_ema + 0.12f * inst_speed;
 }
 
-static void update_engagement_score(struct CatPlayState *state, const cv::Point2f &cat_center, const cv::Point2f &laser, const Yolov5CatTrackInfo &cat, float dt_sec) {
+static void update_engagement_score(
+    struct CatPlayState *state,
+    const cv::Point2f &cat_center,
+    const cv::Point2f &laser,
+    const Yolov5CatTrackInfo &cat,
+    float behavior_confidence,
+    float dt_sec) {
     // Engagement uses richer behavior cues:
     // - distance reaction
     // - heading alignment (cat motion toward laser)
@@ -278,7 +284,7 @@ static void update_engagement_score(struct CatPlayState *state, const cv::Point2
     signal = clampf_local(signal + 0.20f * heading_alignment, 0.0f, 1.0f);
 
     // Boost engagement when cat goes for the dot while this algorithm is active.
-    const float catch_radius = compute_catch_radius(cat, d);
+    const float catch_radius = compute_catch_radius(cat, d, behavior_confidence);
     const float near_target_radius = 1.4f * catch_radius;
     const int within_catch_radius = (d <= catch_radius) ? 1 : 0;
     const int near_target_zone = (d <= near_target_radius) ? 1 : 0;
@@ -409,6 +415,7 @@ static void maybe_start_near_miss_tease(
 static int maybe_build_near_miss_tease_target(
     struct CatPlayState *state,
     const Yolov5CatTrackInfo &cat,
+    float behavior_confidence,
     const cv::Point2f &cat_center,
     const cv::Point2f &laser,
     int frame_w,
@@ -430,7 +437,7 @@ static int maybe_build_near_miss_tease_target(
         return 1;
     }
 
-    const float radius = compute_catch_radius(cat, point_distance(cat_center, laser)) * state->near_miss_radius_scale;
+    const float radius = compute_catch_radius(cat, point_distance(cat_center, laser), behavior_confidence) * state->near_miss_radius_scale;
     state->near_miss_angle_rad += (float)state->near_miss_direction * dt_sec * 11.0f;
     cv::Point2f tease_point(
         cat_center.x + cosf(state->near_miss_angle_rad) * radius,
@@ -467,13 +474,14 @@ static int maybe_build_near_miss_tease_target(
 
 static void maybe_flip_oval_direction_on_catch(struct CatPlayState *state,
                                                const Yolov5CatTrackInfo &cat,
+                                               float behavior_confidence,
                                                const cv::Point2f &cat_center,
                                                const cv::Point2f &laser,
                                                float dt_sec) {
     state->oval_direction_cooldown_sec = clampf_local(state->oval_direction_cooldown_sec - dt_sec, 0.0f, 2.0f);
 
     // "Trying to catch" heuristic: laser gets very close to cat center.
-    const float catch_radius = compute_catch_radius(cat, point_distance(cat_center, laser));
+    const float catch_radius = compute_catch_radius(cat, point_distance(cat_center, laser), behavior_confidence);
     if (point_distance(cat_center, laser) > catch_radius || state->oval_direction_cooldown_sec > 0.0f) {
         return;
     }
@@ -552,7 +560,8 @@ cv::Point2f build_cat_play_target(
     float dt_sec,
     const char **algo_name_out) {
     (void)frame_index;
-    const float confidence_norm = clampf_local((detection_confidence - 0.30f) / 0.60f, 0.0f, 1.0f);
+    const float behavior_confidence = clampf_local(detection_confidence, 0.0f, 1.0f);
+    const float confidence_norm = clampf_local((behavior_confidence - 0.30f) / 0.60f, 0.0f, 1.0f);
     const float low_confidence = 1.0f - confidence_norm;
     const float confidence_speed_scale = 0.70f + 0.55f * confidence_norm;
     const float confidence_arc_scale = 1.0f + 0.30f * low_confidence;
@@ -561,7 +570,7 @@ cv::Point2f build_cat_play_target(
     const float confidence_transition_scale = 0.55f + 0.90f * confidence_norm;
     const cv::Point2f cat_center(cat.x + cat.width * 0.5f, cat.y + cat.height * 0.5f);
 
-    update_engagement_score(state, cat_center, laser, cat, dt_sec);
+    update_engagement_score(state, cat_center, laser, cat, behavior_confidence, dt_sec);
     update_cat_velocity_signal(state, cat_center, dt_sec);
     apply_novelty_decay_recovery(state, dt_sec);
     update_director_layer(state, dt_sec);
@@ -588,7 +597,7 @@ cv::Point2f build_cat_play_target(
         return laser;
     }
 
-    const float catch_radius = compute_catch_radius(cat, point_distance(cat_center, laser));
+    const float catch_radius = compute_catch_radius(cat, point_distance(cat_center, laser), behavior_confidence);
     const float speed_norm_for_hesitation = clampf_local(state->cat_speed_px_per_sec_ema / 220.0f, 0.0f, 1.0f);
     const float chase_dist = point_distance(cat_center, laser);
     const int high_speed_close_chase = (speed_norm_for_hesitation > 0.65f && chase_dist < (1.15f * catch_radius));
@@ -651,11 +660,11 @@ cv::Point2f build_cat_play_target(
     zigzag_duration_scale *= (1.0f + 0.45f * low_confidence);
 
     if (state->algorithm == CAT_PLAY_OVAL) {
-        maybe_flip_oval_direction_on_catch(state, cat, cat_center, laser, dt_sec);
+        maybe_flip_oval_direction_on_catch(state, cat, behavior_confidence, cat_center, laser, dt_sec);
         maybe_start_near_miss_tease(state, cat, dt_sec, director_tease_bias);
 
         cv::Point2f tease_target(0.0f, 0.0f);
-        if (maybe_build_near_miss_tease_target(state, cat, cat_center, laser, frame_w, frame_h, dt_sec, algo_name_out, &tease_target)) {
+        if (maybe_build_near_miss_tease_target(state, cat, behavior_confidence, cat_center, laser, frame_w, frame_h, dt_sec, algo_name_out, &tease_target)) {
             return tease_target;
         }
 
