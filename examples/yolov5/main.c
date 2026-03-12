@@ -603,6 +603,7 @@ int main(int argc, char **argv) {
             cv::Point2f play_target = build_cat_play_target(
                 &play_state,
                 smoothed,
+                smoothed.confidence,
                 virtual_laser_point,
                 frame_index,
                 frame.cols,

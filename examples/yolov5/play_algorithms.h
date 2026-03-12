@@ -99,6 +99,7 @@ void init_cat_play_state(struct CatPlayState *state);
 cv::Point2f build_cat_play_target(
     struct CatPlayState *state,
     const Yolov5CatTrackInfo &cat,
+    float detection_confidence,
     const cv::Point2f &laser,
     int frame_index,
     int frame_w,

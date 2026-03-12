@@ -544,6 +544,7 @@ void init_cat_play_state(struct CatPlayState *state) {
 cv::Point2f build_cat_play_target(
     struct CatPlayState *state,
     const Yolov5CatTrackInfo &cat,
+    float detection_confidence,
     const cv::Point2f &laser,
     int frame_index,
     int frame_w,
@@ -551,6 +552,13 @@ cv::Point2f build_cat_play_target(
     float dt_sec,
     const char **algo_name_out) {
     (void)frame_index;
+    const float confidence_norm = clampf_local((detection_confidence - 0.30f) / 0.60f, 0.0f, 1.0f);
+    const float low_confidence = 1.0f - confidence_norm;
+    const float confidence_speed_scale = 0.70f + 0.55f * confidence_norm;
+    const float confidence_arc_scale = 1.0f + 0.30f * low_confidence;
+    const float confidence_hold_scale = 1.0f + 1.10f * low_confidence;
+    const float confidence_dart_scale = 0.35f + 0.85f * confidence_norm;
+    const float confidence_transition_scale = 0.55f + 0.90f * confidence_norm;
     const cv::Point2f cat_center(cat.x + cat.width * 0.5f, cat.y + cat.height * 0.5f);
 
     update_engagement_score(state, cat_center, laser, cat, dt_sec);
@@ -638,6 +646,9 @@ cv::Point2f build_cat_play_target(
         zigzag_speed_scale = 0.8f;
         zigzag_duration_scale = 1.2f;
     }
+    oval_speed_scale *= confidence_speed_scale;
+    zigzag_speed_scale *= confidence_speed_scale;
+    zigzag_duration_scale *= (1.0f + 0.45f * low_confidence);
 
     if (state->algorithm == CAT_PLAY_OVAL) {
         maybe_flip_oval_direction_on_catch(state, cat, cat_center, laser, dt_sec);
@@ -654,14 +665,14 @@ cv::Point2f build_cat_play_target(
         const float direction = (state->oval_direction >= 0) ? 1.0f : -1.0f;
         const float oval_challenge_speed = clampf_local(1.0f + 0.30f * challenge, 0.70f, 1.35f);
         const float oval_phase_step = (0.10f + 0.16f * speed_norm) * oval_speed_scale * oval_challenge_speed;
-        const float oval_arc_scale = clampf_local(1.12f - 0.28f * challenge, 0.75f, 1.35f);
+        const float oval_arc_scale = clampf_local((1.12f - 0.28f * challenge) * confidence_arc_scale, 0.75f, 1.55f);
         state->oval_phase += direction * oval_phase_step;
 
         // If cat movement is low, occasionally bait with a dart pattern.
-        if (speed_norm < 0.25f && random_float_range(0.0f, 1.0f) < (0.02f * clampf_local(dt_sec * 30.0f, 0.0f, 2.0f))) {
+        if (speed_norm < 0.25f && random_float_range(0.0f, 1.0f) < (0.02f * confidence_dart_scale * clampf_local(dt_sec * 30.0f, 0.0f, 2.0f))) {
             state->algorithm = CAT_PLAY_STARE_DART;
             state->stare_dart_phase = STARE_DART_HOLD;
-            state->stare_dart_hold_time_sec = random_float_range(2.0f, 6.0f);
+            state->stare_dart_hold_time_sec = random_float_range(2.0f, 6.0f) * confidence_hold_scale;
             state->stare_dart_hold_point = laser;
         }
         return build_oval_target(cat, state->oval_phase, frame_w, frame_h, oval_arc_scale);
@@ -671,14 +682,15 @@ cv::Point2f build_cat_play_target(
         *algo_name_out = "stare_dart";
         if (state->stare_dart_phase == STARE_DART_HOLD) {
             if (state->stare_dart_hold_time_sec <= 0.0f) {
-                state->stare_dart_hold_time_sec = random_float_range(5.0f, 30.0f);
+                state->stare_dart_hold_time_sec = random_float_range(5.0f, 30.0f) * confidence_hold_scale;
                 state->stare_dart_hold_point = laser;
             }
             state->stare_dart_hold_time_sec -= dt_sec;
             if (state->stare_dart_hold_time_sec <= 0.0f) {
                 state->stare_dart_phase = STARE_DART_DART;
                 state->stare_dart_dart_target = random_point_outside_cat(cat, frame_w, frame_h);
-                maybe_transition_with_probability(state, 10);
+                const int transition_percent = (int)floorf(0.5f + 10.0f * confidence_transition_scale);
+                maybe_transition_with_probability(state, transition_percent);
             }
             return clamp_point_to_frame(state->stare_dart_hold_point, frame_w, frame_h);
         }
@@ -688,7 +700,7 @@ cv::Point2f build_cat_play_target(
         }
         if (point_distance(laser, state->stare_dart_dart_target) < 20.0f) {
             state->stare_dart_phase = STARE_DART_HOLD;
-            state->stare_dart_hold_time_sec = random_float_range(5.0f, 30.0f);
+            state->stare_dart_hold_time_sec = random_float_range(5.0f, 30.0f) * confidence_hold_scale;
             state->stare_dart_hold_point = laser;
         }
         return clamp_point_to_frame(state->stare_dart_dart_target, frame_w, frame_h);
@@ -707,7 +719,7 @@ cv::Point2f build_cat_play_target(
     if (state->zigzag_phase == ZIGZAG_SHAKE) {
         state->zigzag_phase_time_sec += dt_sec;
         const float challenge = clampf_local(state->challenge_ladder_level, -1.0f, 1.0f);
-        const float zigzag_arc_scale = clampf_local(1.15f - 0.30f * challenge, 0.72f, 1.40f);
+        const float zigzag_arc_scale = clampf_local((1.15f - 0.30f * challenge) * confidence_arc_scale, 0.72f, 1.70f);
         const float amp_x = clampf_local(clampf_local(cat.width * 0.45f, 12.0f, 80.0f) * zigzag_arc_scale, 10.0f, 120.0f);
         const float amp_y = clampf_local(clampf_local(cat.height * 0.18f, 6.0f, 35.0f) * zigzag_arc_scale, 5.0f, 55.0f);
         const float speed_norm = clampf_local(state->cat_speed_px_per_sec_ema / 220.0f, 0.0f, 1.0f);
@@ -728,7 +740,8 @@ cv::Point2f build_cat_play_target(
         state->zigzag_retreat_point = build_retreat_target_avoiding_cat(laser, cat, frame_w, frame_h);
         if (point_distance(laser, state->zigzag_retreat_point) < 20.0f) {
             state->zigzag_phase = ZIGZAG_RETURN;
-            maybe_transition_with_probability(state, 10);
+            const int transition_percent = (int)floorf(0.5f + 10.0f * confidence_transition_scale);
+            maybe_transition_with_probability(state, transition_percent);
         }
         return state->zigzag_retreat_point;
     }
