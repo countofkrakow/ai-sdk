@@ -1,0 +1,65 @@
+{
+  "catch_radius": {
+    "base_scale": 0.18,
+    "min_radius": 10.0,
+    "max_radius": 42.0,
+    "confidence_norm_offset": 0.25,
+    "confidence_norm_scale": 0.60,
+    "confidence_scale_base": 0.90,
+    "confidence_scale_gain": 0.25,
+    "near_dist_diag_scale": 1.10,
+    "far_dist_diag_scale": 2.20,
+    "distance_scale_base": 0.88,
+    "distance_scale_gain": 0.20,
+    "clamp_min": 8.0,
+    "clamp_max": 52.0
+  },
+  "algorithms": {
+    "common": {
+      "speed_norm_divisor": 220.0
+    },
+    "oval": {
+      "margin_scale": 1.15,
+      "rx_min": 12.0,
+      "rx_max": 140.0,
+      "ry_min": 12.0,
+      "ry_max": 140.0,
+      "scaled_min": 10.0,
+      "scaled_max": 220.0
+    },
+    "near_miss": {
+      "trigger_base": 0.08,
+      "low_engagement_threshold": 0.45,
+      "radius_min": 1.10,
+      "radius_max": 1.40,
+      "pause_min_base": 0.30,
+      "pause_min_gain": 0.35,
+      "pause_max_base": 0.65,
+      "pause_max_gain": 0.55
+    },
+    "stare_dart": {
+      "hold_min_sec": 2.0,
+      "hold_max_sec": 6.0,
+      "long_hold_min_sec": 5.0,
+      "long_hold_max_sec": 30.0,
+      "low_speed_threshold": 0.25,
+      "low_speed_dart_prob": 0.02
+    },
+    "zigzag": {
+      "front_y_offset": 0.25,
+      "front_reach_threshold_px": 18.0,
+      "retreat_reach_threshold_px": 20.0
+    }
+  },
+  "confidence_fallback": {
+    "speed_scale_min": 0.70,
+    "speed_scale_gain": 0.55,
+    "arc_scale_gain": 0.30,
+    "hold_scale_gain": 1.10,
+    "dart_scale_min": 0.35,
+    "dart_scale_gain": 0.85,
+    "transition_scale_base": 0.55,
+    "transition_scale_gain": 0.90,
+    "zigzag_duration_low_conf_gain": 0.45
+  }
+}

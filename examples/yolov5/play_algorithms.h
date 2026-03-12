@@ -96,6 +96,8 @@ struct CatPlayState {
 };
 
 void init_cat_play_state(struct CatPlayState *state);
+void reset_cat_play_tuning_defaults(void);
+int load_cat_play_tuning_json(const char *json_path);
 cv::Point2f build_cat_play_target(
     struct CatPlayState *state,
     const Yolov5CatTrackInfo &cat,

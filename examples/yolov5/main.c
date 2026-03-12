@@ -401,8 +401,15 @@ int main(int argc, char **argv) {
 
     const int input_channels = 3;
     const float control_dt_sec = 0.03f;
+    const char *play_tuning_json_path = "examples/yolov5/play_tuning.json";
 
     srand((unsigned int)time(NULL));
+
+    if (load_cat_play_tuning_json(play_tuning_json_path) == 0) {
+        fprintf(stderr, "Loaded play tuning config: %s\n", play_tuning_json_path);
+    } else {
+        fprintf(stderr, "Play tuning config not loaded (%s); using built-in defaults.\n", play_tuning_json_path);
+    }
 
     cv::VideoCapture camera(camera_device, cv::CAP_V4L2);
     if (!camera.isOpened()) {

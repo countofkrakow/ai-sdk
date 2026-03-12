@@ -5,6 +5,217 @@
 #include <stdlib.h>
 #include <opencv2/imgproc.hpp>
 
+struct CatPlayTuningConfig {
+    struct {
+        float base_scale;
+        float min_radius;
+        float max_radius;
+        float confidence_norm_offset;
+        float confidence_norm_scale;
+        float confidence_scale_base;
+        float confidence_scale_gain;
+        float near_dist_diag_scale;
+        float far_dist_diag_scale;
+        float distance_scale_base;
+        float distance_scale_gain;
+        float clamp_min;
+        float clamp_max;
+    } catch_radius;
+
+    struct {
+        float speed_norm_divisor;
+        float oval_margin_scale;
+        float oval_rx_min;
+        float oval_rx_max;
+        float oval_ry_min;
+        float oval_ry_max;
+        float oval_scaled_min;
+        float oval_scaled_max;
+        float near_miss_trigger_base;
+        float near_miss_low_engagement_threshold;
+        float near_miss_radius_min;
+        float near_miss_radius_max;
+        float near_miss_pause_min_base;
+        float near_miss_pause_min_gain;
+        float near_miss_pause_max_base;
+        float near_miss_pause_max_gain;
+    } algorithms;
+
+    struct {
+        float hold_min_sec;
+        float hold_max_sec;
+        float long_hold_min_sec;
+        float long_hold_max_sec;
+        float low_speed_threshold;
+        float low_speed_dart_prob;
+    } stare_dart;
+
+    struct {
+        float front_y_offset;
+        float front_reach_threshold_px;
+        float retreat_reach_threshold_px;
+    } zigzag;
+
+    struct {
+        float speed_scale_min;
+        float speed_scale_gain;
+        float arc_scale_gain;
+        float hold_scale_gain;
+        float dart_scale_min;
+        float dart_scale_gain;
+        float transition_scale_base;
+        float transition_scale_gain;
+        float zigzag_duration_low_conf_gain;
+    } confidence_fallback;
+};
+
+static CatPlayTuningConfig g_tuning;
+static int g_tuning_initialized = 0;
+
+void reset_cat_play_tuning_defaults(void) {
+    g_tuning.catch_radius.base_scale = 0.18f;
+    g_tuning.catch_radius.min_radius = 10.0f;
+    g_tuning.catch_radius.max_radius = 42.0f;
+    g_tuning.catch_radius.confidence_norm_offset = 0.25f;
+    g_tuning.catch_radius.confidence_norm_scale = 0.60f;
+    g_tuning.catch_radius.confidence_scale_base = 0.90f;
+    g_tuning.catch_radius.confidence_scale_gain = 0.25f;
+    g_tuning.catch_radius.near_dist_diag_scale = 1.1f;
+    g_tuning.catch_radius.far_dist_diag_scale = 2.2f;
+    g_tuning.catch_radius.distance_scale_base = 0.88f;
+    g_tuning.catch_radius.distance_scale_gain = 0.20f;
+    g_tuning.catch_radius.clamp_min = 8.0f;
+    g_tuning.catch_radius.clamp_max = 52.0f;
+
+    g_tuning.algorithms.speed_norm_divisor = 220.0f;
+    g_tuning.algorithms.oval_margin_scale = 1.15f;
+    g_tuning.algorithms.oval_rx_min = 12.0f;
+    g_tuning.algorithms.oval_rx_max = 140.0f;
+    g_tuning.algorithms.oval_ry_min = 12.0f;
+    g_tuning.algorithms.oval_ry_max = 140.0f;
+    g_tuning.algorithms.oval_scaled_min = 10.0f;
+    g_tuning.algorithms.oval_scaled_max = 220.0f;
+    g_tuning.algorithms.near_miss_trigger_base = 0.08f;
+    g_tuning.algorithms.near_miss_low_engagement_threshold = 0.45f;
+    g_tuning.algorithms.near_miss_radius_min = 1.10f;
+    g_tuning.algorithms.near_miss_radius_max = 1.40f;
+    g_tuning.algorithms.near_miss_pause_min_base = 0.30f;
+    g_tuning.algorithms.near_miss_pause_min_gain = 0.35f;
+    g_tuning.algorithms.near_miss_pause_max_base = 0.65f;
+    g_tuning.algorithms.near_miss_pause_max_gain = 0.55f;
+
+    g_tuning.stare_dart.hold_min_sec = 2.0f;
+    g_tuning.stare_dart.hold_max_sec = 6.0f;
+    g_tuning.stare_dart.long_hold_min_sec = 5.0f;
+    g_tuning.stare_dart.long_hold_max_sec = 30.0f;
+    g_tuning.stare_dart.low_speed_threshold = 0.25f;
+    g_tuning.stare_dart.low_speed_dart_prob = 0.02f;
+
+    g_tuning.zigzag.front_y_offset = 0.25f;
+    g_tuning.zigzag.front_reach_threshold_px = 18.0f;
+    g_tuning.zigzag.retreat_reach_threshold_px = 20.0f;
+
+    g_tuning.confidence_fallback.speed_scale_min = 0.70f;
+    g_tuning.confidence_fallback.speed_scale_gain = 0.55f;
+    g_tuning.confidence_fallback.arc_scale_gain = 0.30f;
+    g_tuning.confidence_fallback.hold_scale_gain = 1.10f;
+    g_tuning.confidence_fallback.dart_scale_min = 0.35f;
+    g_tuning.confidence_fallback.dart_scale_gain = 0.85f;
+    g_tuning.confidence_fallback.transition_scale_base = 0.55f;
+    g_tuning.confidence_fallback.transition_scale_gain = 0.90f;
+    g_tuning.confidence_fallback.zigzag_duration_low_conf_gain = 0.45f;
+    g_tuning_initialized = 1;
+}
+
+static void maybe_read_float(const cv::FileNode &n, float *dst) {
+    if (!n.empty() && dst != NULL) {
+        *dst = (float)n.real();
+    }
+}
+
+int load_cat_play_tuning_json(const char *json_path) {
+    reset_cat_play_tuning_defaults();
+    if (json_path == NULL) {
+        return -1;
+    }
+
+    cv::FileStorage fs(json_path, cv::FileStorage::READ | cv::FileStorage::FORMAT_JSON);
+    if (!fs.isOpened()) {
+        return -1;
+    }
+
+    const cv::FileNode root = fs.root();
+    const cv::FileNode cr = root["catch_radius"];
+    maybe_read_float(cr["base_scale"], &g_tuning.catch_radius.base_scale);
+    maybe_read_float(cr["min_radius"], &g_tuning.catch_radius.min_radius);
+    maybe_read_float(cr["max_radius"], &g_tuning.catch_radius.max_radius);
+    maybe_read_float(cr["confidence_norm_offset"], &g_tuning.catch_radius.confidence_norm_offset);
+    maybe_read_float(cr["confidence_norm_scale"], &g_tuning.catch_radius.confidence_norm_scale);
+    maybe_read_float(cr["confidence_scale_base"], &g_tuning.catch_radius.confidence_scale_base);
+    maybe_read_float(cr["confidence_scale_gain"], &g_tuning.catch_radius.confidence_scale_gain);
+    maybe_read_float(cr["near_dist_diag_scale"], &g_tuning.catch_radius.near_dist_diag_scale);
+    maybe_read_float(cr["far_dist_diag_scale"], &g_tuning.catch_radius.far_dist_diag_scale);
+    maybe_read_float(cr["distance_scale_base"], &g_tuning.catch_radius.distance_scale_base);
+    maybe_read_float(cr["distance_scale_gain"], &g_tuning.catch_radius.distance_scale_gain);
+    maybe_read_float(cr["clamp_min"], &g_tuning.catch_radius.clamp_min);
+    maybe_read_float(cr["clamp_max"], &g_tuning.catch_radius.clamp_max);
+
+    const cv::FileNode alg = root["algorithms"];
+    const cv::FileNode common = alg["common"];
+    maybe_read_float(common["speed_norm_divisor"], &g_tuning.algorithms.speed_norm_divisor);
+
+    const cv::FileNode oval = alg["oval"];
+    maybe_read_float(oval["margin_scale"], &g_tuning.algorithms.oval_margin_scale);
+    maybe_read_float(oval["rx_min"], &g_tuning.algorithms.oval_rx_min);
+    maybe_read_float(oval["rx_max"], &g_tuning.algorithms.oval_rx_max);
+    maybe_read_float(oval["ry_min"], &g_tuning.algorithms.oval_ry_min);
+    maybe_read_float(oval["ry_max"], &g_tuning.algorithms.oval_ry_max);
+    maybe_read_float(oval["scaled_min"], &g_tuning.algorithms.oval_scaled_min);
+    maybe_read_float(oval["scaled_max"], &g_tuning.algorithms.oval_scaled_max);
+
+    const cv::FileNode near_miss = alg["near_miss"];
+    maybe_read_float(near_miss["trigger_base"], &g_tuning.algorithms.near_miss_trigger_base);
+    maybe_read_float(near_miss["low_engagement_threshold"], &g_tuning.algorithms.near_miss_low_engagement_threshold);
+    maybe_read_float(near_miss["radius_min"], &g_tuning.algorithms.near_miss_radius_min);
+    maybe_read_float(near_miss["radius_max"], &g_tuning.algorithms.near_miss_radius_max);
+    maybe_read_float(near_miss["pause_min_base"], &g_tuning.algorithms.near_miss_pause_min_base);
+    maybe_read_float(near_miss["pause_min_gain"], &g_tuning.algorithms.near_miss_pause_min_gain);
+    maybe_read_float(near_miss["pause_max_base"], &g_tuning.algorithms.near_miss_pause_max_base);
+    maybe_read_float(near_miss["pause_max_gain"], &g_tuning.algorithms.near_miss_pause_max_gain);
+
+    const cv::FileNode stare = alg["stare_dart"];
+    maybe_read_float(stare["hold_min_sec"], &g_tuning.stare_dart.hold_min_sec);
+    maybe_read_float(stare["hold_max_sec"], &g_tuning.stare_dart.hold_max_sec);
+    maybe_read_float(stare["long_hold_min_sec"], &g_tuning.stare_dart.long_hold_min_sec);
+    maybe_read_float(stare["long_hold_max_sec"], &g_tuning.stare_dart.long_hold_max_sec);
+    maybe_read_float(stare["low_speed_threshold"], &g_tuning.stare_dart.low_speed_threshold);
+    maybe_read_float(stare["low_speed_dart_prob"], &g_tuning.stare_dart.low_speed_dart_prob);
+
+    const cv::FileNode zig = alg["zigzag"];
+    maybe_read_float(zig["front_y_offset"], &g_tuning.zigzag.front_y_offset);
+    maybe_read_float(zig["front_reach_threshold_px"], &g_tuning.zigzag.front_reach_threshold_px);
+    maybe_read_float(zig["retreat_reach_threshold_px"], &g_tuning.zigzag.retreat_reach_threshold_px);
+
+    const cv::FileNode cf = root["confidence_fallback"];
+    maybe_read_float(cf["speed_scale_min"], &g_tuning.confidence_fallback.speed_scale_min);
+    maybe_read_float(cf["speed_scale_gain"], &g_tuning.confidence_fallback.speed_scale_gain);
+    maybe_read_float(cf["arc_scale_gain"], &g_tuning.confidence_fallback.arc_scale_gain);
+    maybe_read_float(cf["hold_scale_gain"], &g_tuning.confidence_fallback.hold_scale_gain);
+    maybe_read_float(cf["dart_scale_min"], &g_tuning.confidence_fallback.dart_scale_min);
+    maybe_read_float(cf["dart_scale_gain"], &g_tuning.confidence_fallback.dart_scale_gain);
+    maybe_read_float(cf["transition_scale_base"], &g_tuning.confidence_fallback.transition_scale_base);
+    maybe_read_float(cf["transition_scale_gain"], &g_tuning.confidence_fallback.transition_scale_gain);
+    maybe_read_float(cf["zigzag_duration_low_conf_gain"], &g_tuning.confidence_fallback.zigzag_duration_low_conf_gain);
+    g_tuning_initialized = 1;
+    return 0;
+}
+
+static void ensure_tuning_initialized(void) {
+    if (!g_tuning_initialized) {
+        reset_cat_play_tuning_defaults();
+    }
+}
+
 static float clampf_local(float value, float min_v, float max_v) {
     return (value < min_v) ? min_v : ((value > max_v) ? max_v : value);
 }
@@ -21,7 +232,10 @@ static float point_distance(const cv::Point2f &a, const cv::Point2f &b) {
 }
 
 static float compute_base_catch_radius(const Yolov5CatTrackInfo &cat) {
-    return clampf_local(0.18f * (cat.width + cat.height), 10.0f, 42.0f);
+    return clampf_local(
+        g_tuning.catch_radius.base_scale * (cat.width + cat.height),
+        g_tuning.catch_radius.min_radius,
+        g_tuning.catch_radius.max_radius);
 }
 
 static float compute_catch_radius(const Yolov5CatTrackInfo &cat, float cat_laser_dist, float behavior_confidence) {
@@ -30,15 +244,24 @@ static float compute_catch_radius(const Yolov5CatTrackInfo &cat, float cat_laser
 
     // Lower confidence and larger cat-dot distance narrow the effective catch zone,
     // while high confidence and close-range play can widen it for challenge.
-    const float confidence_norm = clampf_local((behavior_confidence - 0.25f) / 0.60f, 0.0f, 1.0f);
-    const float confidence_scale = 0.90f + 0.25f * confidence_norm;
+    const float confidence_norm = clampf_local(
+        (behavior_confidence - g_tuning.catch_radius.confidence_norm_offset) /
+            g_tuning.catch_radius.confidence_norm_scale,
+        0.0f,
+        1.0f);
+    const float confidence_scale =
+        g_tuning.catch_radius.confidence_scale_base + g_tuning.catch_radius.confidence_scale_gain * confidence_norm;
 
-    const float near_dist = 1.1f * bbox_diag;
-    const float far_dist = 2.2f * bbox_diag + 1.0f;
+    const float near_dist = g_tuning.catch_radius.near_dist_diag_scale * bbox_diag;
+    const float far_dist = g_tuning.catch_radius.far_dist_diag_scale * bbox_diag + 1.0f;
     const float close_norm = 1.0f - clampf_local((cat_laser_dist - near_dist) / (far_dist - near_dist), 0.0f, 1.0f);
-    const float distance_scale = 0.88f + 0.20f * close_norm;
+    const float distance_scale =
+        g_tuning.catch_radius.distance_scale_base + g_tuning.catch_radius.distance_scale_gain * close_norm;
 
-    return clampf_local(base * confidence_scale * distance_scale, 8.0f, 52.0f);
+    return clampf_local(
+        base * confidence_scale * distance_scale,
+        g_tuning.catch_radius.clamp_min,
+        g_tuning.catch_radius.clamp_max);
 }
 
 static cv::Point2f clamp_point_to_frame(const cv::Point2f &p, int frame_w, int frame_h) {
@@ -182,11 +405,11 @@ static cv::Point2f build_oval_target(
     float arc_scale) {
     const float center_x = cat.x + cat.width * 0.5f;
     const float center_y = cat.y + cat.height * 0.5f;
-    const float margin_scale = 1.15f;
-    const float base_rx = clampf_local(cat.width * 0.5f * margin_scale, 12.0f, 140.0f);
-    const float base_ry = clampf_local(cat.height * 0.5f * margin_scale, 12.0f, 140.0f);
-    const float rx = clampf_local(base_rx * arc_scale, 10.0f, 220.0f);
-    const float ry = clampf_local(base_ry * arc_scale, 10.0f, 220.0f);
+    const float margin_scale = g_tuning.algorithms.oval_margin_scale;
+    const float base_rx = clampf_local(cat.width * 0.5f * margin_scale, g_tuning.algorithms.oval_rx_min, g_tuning.algorithms.oval_rx_max);
+    const float base_ry = clampf_local(cat.height * 0.5f * margin_scale, g_tuning.algorithms.oval_ry_min, g_tuning.algorithms.oval_ry_max);
+    const float rx = clampf_local(base_rx * arc_scale, g_tuning.algorithms.oval_scaled_min, g_tuning.algorithms.oval_scaled_max);
+    const float ry = clampf_local(base_ry * arc_scale, g_tuning.algorithms.oval_scaled_min, g_tuning.algorithms.oval_scaled_max);
     return clamp_point_to_frame(cv::Point2f(center_x + rx * cosf(phase), center_y + ry * sinf(phase)), frame_w, frame_h);
 }
 
@@ -346,7 +569,7 @@ static void update_engagement_score(
 
 
 static enum PlayDirectorIntent choose_next_director_intent(const struct CatPlayState *state) {
-    const float speed_norm = clampf_local(state->cat_speed_px_per_sec_ema / 220.0f, 0.0f, 1.0f);
+    const float speed_norm = clampf_local(state->cat_speed_px_per_sec_ema / g_tuning.algorithms.speed_norm_divisor, 0.0f, 1.0f);
     const float engage = clampf_local(state->engagement_score, 0.0f, 1.0f);
     const float catch_success = clampf_local(state->recent_catch_attempt_score, 0.0f, 1.0f);
 
@@ -390,8 +613,11 @@ static void maybe_start_near_miss_tease(
     }
 
     // Trigger occasionally during oval play; stronger chance when engagement is low.
-    const float low_engagement_boost = clampf_local(0.45f - state->engagement_score, 0.0f, 0.45f);
-    const float trigger_prob_per_sec = (0.08f + low_engagement_boost) * director_tease_bias;
+    const float low_engagement_boost = clampf_local(
+        g_tuning.algorithms.near_miss_low_engagement_threshold - state->engagement_score,
+        0.0f,
+        g_tuning.algorithms.near_miss_low_engagement_threshold);
+    const float trigger_prob_per_sec = (g_tuning.algorithms.near_miss_trigger_base + low_engagement_boost) * director_tease_bias;
     if (random_float_range(0.0f, 1.0f) > trigger_prob_per_sec * clampf_local(dt_sec, 0.0f, 1.0f)) {
         return;
     }
@@ -402,8 +628,8 @@ static void maybe_start_near_miss_tease(
     const int pass_bias = (int)floorf(0.5f + 3.0f * catch_success); // high success => longer tease runs.
     state->near_miss_passes_remaining = 2 + (rand() % 3) + pass_bias; // adaptive ~2-7 passes.
     state->near_miss_angle_rad = random_float_range(0.0f, 6.2831853f);
-    const float radius_min = 1.10f - 0.10f * challenge;
-    const float radius_max = 1.40f - 0.14f * challenge;
+    const float radius_min = g_tuning.algorithms.near_miss_radius_min - 0.10f * challenge;
+    const float radius_max = g_tuning.algorithms.near_miss_radius_max - 0.14f * challenge;
     state->near_miss_radius_scale = random_float_range(radius_min, radius_max);
     state->near_miss_segment_time_sec = 0.0f;
     state->near_miss_segment_duration_sec = random_float_range(0.16f, 0.34f);
@@ -458,8 +684,14 @@ static int maybe_build_near_miss_tease_target(
         state->near_miss_phase = NEAR_MISS_PAUSE;
         const float catch_success = clampf_local(state->recent_catch_attempt_score, 0.0f, 1.0f);
         const float challenge = clampf_local(state->challenge_ladder_level, -1.0f, 1.0f);
-        const float pause_min = (0.30f + 0.35f * (1.0f - catch_success)) * (1.0f - 0.22f * challenge);
-        const float pause_max = (0.65f + 0.55f * (1.0f - catch_success)) * (1.0f - 0.26f * challenge);
+        const float pause_min =
+            (g_tuning.algorithms.near_miss_pause_min_base +
+             g_tuning.algorithms.near_miss_pause_min_gain * (1.0f - catch_success)) *
+            (1.0f - 0.22f * challenge);
+        const float pause_max =
+            (g_tuning.algorithms.near_miss_pause_max_base +
+             g_tuning.algorithms.near_miss_pause_max_gain * (1.0f - catch_success)) *
+            (1.0f - 0.26f * challenge);
         state->near_miss_pause_time_sec = random_float_range(pause_min, pause_max);
         state->near_miss_pause_point = tease_point;
         *algo_name_out = "near_miss_tease_pause";
@@ -498,6 +730,7 @@ static void maybe_flip_oval_direction_on_catch(struct CatPlayState *state,
 }
 
 void init_cat_play_state(struct CatPlayState *state) {
+    ensure_tuning_initialized();
     state->algorithm = CAT_PLAY_OVAL;
     state->last_cat_center = cv::Point2f(0.0f, 0.0f);
     state->cat_still_time_sec = 0.0f;
@@ -559,15 +792,20 @@ cv::Point2f build_cat_play_target(
     int frame_h,
     float dt_sec,
     const char **algo_name_out) {
+    ensure_tuning_initialized();
     (void)frame_index;
     const float behavior_confidence = clampf_local(detection_confidence, 0.0f, 1.0f);
     const float confidence_norm = clampf_local((behavior_confidence - 0.30f) / 0.60f, 0.0f, 1.0f);
     const float low_confidence = 1.0f - confidence_norm;
-    const float confidence_speed_scale = 0.70f + 0.55f * confidence_norm;
-    const float confidence_arc_scale = 1.0f + 0.30f * low_confidence;
-    const float confidence_hold_scale = 1.0f + 1.10f * low_confidence;
-    const float confidence_dart_scale = 0.35f + 0.85f * confidence_norm;
-    const float confidence_transition_scale = 0.55f + 0.90f * confidence_norm;
+    const float confidence_speed_scale =
+        g_tuning.confidence_fallback.speed_scale_min + g_tuning.confidence_fallback.speed_scale_gain * confidence_norm;
+    const float confidence_arc_scale = 1.0f + g_tuning.confidence_fallback.arc_scale_gain * low_confidence;
+    const float confidence_hold_scale = 1.0f + g_tuning.confidence_fallback.hold_scale_gain * low_confidence;
+    const float confidence_dart_scale =
+        g_tuning.confidence_fallback.dart_scale_min + g_tuning.confidence_fallback.dart_scale_gain * confidence_norm;
+    const float confidence_transition_scale =
+        g_tuning.confidence_fallback.transition_scale_base +
+        g_tuning.confidence_fallback.transition_scale_gain * confidence_norm;
     const cv::Point2f cat_center(cat.x + cat.width * 0.5f, cat.y + cat.height * 0.5f);
 
     update_engagement_score(state, cat_center, laser, cat, behavior_confidence, dt_sec);
@@ -598,7 +836,7 @@ cv::Point2f build_cat_play_target(
     }
 
     const float catch_radius = compute_catch_radius(cat, point_distance(cat_center, laser), behavior_confidence);
-    const float speed_norm_for_hesitation = clampf_local(state->cat_speed_px_per_sec_ema / 220.0f, 0.0f, 1.0f);
+    const float speed_norm_for_hesitation = clampf_local(state->cat_speed_px_per_sec_ema / g_tuning.algorithms.speed_norm_divisor, 0.0f, 1.0f);
     const float chase_dist = point_distance(cat_center, laser);
     const int high_speed_close_chase = (speed_norm_for_hesitation > 0.65f && chase_dist < (1.15f * catch_radius));
 
@@ -657,7 +895,7 @@ cv::Point2f build_cat_play_target(
     }
     oval_speed_scale *= confidence_speed_scale;
     zigzag_speed_scale *= confidence_speed_scale;
-    zigzag_duration_scale *= (1.0f + 0.45f * low_confidence);
+    zigzag_duration_scale *= (1.0f + g_tuning.confidence_fallback.zigzag_duration_low_conf_gain * low_confidence);
 
     if (state->algorithm == CAT_PLAY_OVAL) {
         maybe_flip_oval_direction_on_catch(state, cat, behavior_confidence, cat_center, laser, dt_sec);
@@ -669,7 +907,7 @@ cv::Point2f build_cat_play_target(
         }
 
         *algo_name_out = "oval";
-        const float speed_norm = clampf_local(state->cat_speed_px_per_sec_ema / 220.0f, 0.0f, 1.0f);
+        const float speed_norm = clampf_local(state->cat_speed_px_per_sec_ema / g_tuning.algorithms.speed_norm_divisor, 0.0f, 1.0f);
         const float challenge = clampf_local(state->challenge_ladder_level, -1.0f, 1.0f);
         const float direction = (state->oval_direction >= 0) ? 1.0f : -1.0f;
         const float oval_challenge_speed = clampf_local(1.0f + 0.30f * challenge, 0.70f, 1.35f);
@@ -678,10 +916,11 @@ cv::Point2f build_cat_play_target(
         state->oval_phase += direction * oval_phase_step;
 
         // If cat movement is low, occasionally bait with a dart pattern.
-        if (speed_norm < 0.25f && random_float_range(0.0f, 1.0f) < (0.02f * confidence_dart_scale * clampf_local(dt_sec * 30.0f, 0.0f, 2.0f))) {
+        if (speed_norm < g_tuning.stare_dart.low_speed_threshold &&
+            random_float_range(0.0f, 1.0f) < (g_tuning.stare_dart.low_speed_dart_prob * confidence_dart_scale * clampf_local(dt_sec * 30.0f, 0.0f, 2.0f))) {
             state->algorithm = CAT_PLAY_STARE_DART;
             state->stare_dart_phase = STARE_DART_HOLD;
-            state->stare_dart_hold_time_sec = random_float_range(2.0f, 6.0f) * confidence_hold_scale;
+            state->stare_dart_hold_time_sec = random_float_range(g_tuning.stare_dart.hold_min_sec, g_tuning.stare_dart.hold_max_sec) * confidence_hold_scale;
             state->stare_dart_hold_point = laser;
         }
         return build_oval_target(cat, state->oval_phase, frame_w, frame_h, oval_arc_scale);
@@ -691,7 +930,7 @@ cv::Point2f build_cat_play_target(
         *algo_name_out = "stare_dart";
         if (state->stare_dart_phase == STARE_DART_HOLD) {
             if (state->stare_dart_hold_time_sec <= 0.0f) {
-                state->stare_dart_hold_time_sec = random_float_range(5.0f, 30.0f) * confidence_hold_scale;
+                state->stare_dart_hold_time_sec = random_float_range(g_tuning.stare_dart.long_hold_min_sec, g_tuning.stare_dart.long_hold_max_sec) * confidence_hold_scale;
                 state->stare_dart_hold_point = laser;
             }
             state->stare_dart_hold_time_sec -= dt_sec;
@@ -709,7 +948,7 @@ cv::Point2f build_cat_play_target(
         }
         if (point_distance(laser, state->stare_dart_dart_target) < 20.0f) {
             state->stare_dart_phase = STARE_DART_HOLD;
-            state->stare_dart_hold_time_sec = random_float_range(5.0f, 30.0f) * confidence_hold_scale;
+            state->stare_dart_hold_time_sec = random_float_range(g_tuning.stare_dart.long_hold_min_sec, g_tuning.stare_dart.long_hold_max_sec) * confidence_hold_scale;
             state->stare_dart_hold_point = laser;
         }
         return clamp_point_to_frame(state->stare_dart_dart_target, frame_w, frame_h);
@@ -717,8 +956,8 @@ cv::Point2f build_cat_play_target(
 
     *algo_name_out = "zigzag_retreat";
     if (state->zigzag_phase == ZIGZAG_APPROACH) {
-        state->zigzag_front_point = clamp_point_to_frame(cv::Point2f(cat_center.x, cat.y - cat.height * 0.25f), frame_w, frame_h);
-        if (point_distance(laser, state->zigzag_front_point) < 18.0f) {
+        state->zigzag_front_point = clamp_point_to_frame(cv::Point2f(cat_center.x, cat.y - cat.height * g_tuning.zigzag.front_y_offset), frame_w, frame_h);
+        if (point_distance(laser, state->zigzag_front_point) < g_tuning.zigzag.front_reach_threshold_px) {
             state->zigzag_phase = ZIGZAG_SHAKE;
             state->zigzag_phase_time_sec = 0.0f;
         }
@@ -731,7 +970,7 @@ cv::Point2f build_cat_play_target(
         const float zigzag_arc_scale = clampf_local((1.15f - 0.30f * challenge) * confidence_arc_scale, 0.72f, 1.70f);
         const float amp_x = clampf_local(clampf_local(cat.width * 0.45f, 12.0f, 80.0f) * zigzag_arc_scale, 10.0f, 120.0f);
         const float amp_y = clampf_local(clampf_local(cat.height * 0.18f, 6.0f, 35.0f) * zigzag_arc_scale, 5.0f, 55.0f);
-        const float speed_norm = clampf_local(state->cat_speed_px_per_sec_ema / 220.0f, 0.0f, 1.0f);
+        const float speed_norm = clampf_local(state->cat_speed_px_per_sec_ema / g_tuning.algorithms.speed_norm_divisor, 0.0f, 1.0f);
         const float zigzag_challenge_speed = clampf_local(1.0f + 0.32f * challenge, 0.68f, 1.40f);
         const float t = state->zigzag_phase_time_sec * (6.0f + 6.0f * speed_norm) * zigzag_speed_scale * zigzag_challenge_speed;
         const float saw = (fmodf(t, 2.0f) < 1.0f) ? 1.0f : -1.0f;
@@ -747,7 +986,7 @@ cv::Point2f build_cat_play_target(
 
     if (state->zigzag_phase == ZIGZAG_RETREAT) {
         state->zigzag_retreat_point = build_retreat_target_avoiding_cat(laser, cat, frame_w, frame_h);
-        if (point_distance(laser, state->zigzag_retreat_point) < 20.0f) {
+        if (point_distance(laser, state->zigzag_retreat_point) < g_tuning.zigzag.retreat_reach_threshold_px) {
             state->zigzag_phase = ZIGZAG_RETURN;
             const int transition_percent = (int)floorf(0.5f + 10.0f * confidence_transition_scale);
             maybe_transition_with_probability(state, transition_percent);
@@ -755,8 +994,8 @@ cv::Point2f build_cat_play_target(
         return state->zigzag_retreat_point;
     }
 
-    state->zigzag_front_point = clamp_point_to_frame(cv::Point2f(cat_center.x, cat.y - cat.height * 0.25f), frame_w, frame_h);
-    if (point_distance(laser, state->zigzag_front_point) < 18.0f) {
+    state->zigzag_front_point = clamp_point_to_frame(cv::Point2f(cat_center.x, cat.y - cat.height * g_tuning.zigzag.front_y_offset), frame_w, frame_h);
+    if (point_distance(laser, state->zigzag_front_point) < g_tuning.zigzag.front_reach_threshold_px) {
         state->zigzag_phase = ZIGZAG_SHAKE;
         state->zigzag_phase_time_sec = 0.0f;
     }
