@@ -30,6 +30,8 @@ struct CatPlayState {
 
     // Engagement: larger means cat is actively reacting to laser motion.
     float engagement_score;
+    // Per-algorithm engagement ranking used for transition probabilities.
+    float algorithm_engagement_scores[3];
     float prev_cat_laser_dist;
     float session_time_sec;
     float calm_time_sec;

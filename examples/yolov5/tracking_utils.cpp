@@ -117,6 +117,142 @@ LaserDotObservation stabilize_laser_observation(LaserTrackState *state, const La
     return out;
 }
 
+
+static float bbox_iou(const Yolov5CatTrackInfo &a, const Yolov5CatTrackInfo &b) {
+    const float ax2 = a.x + a.width;
+    const float ay2 = a.y + a.height;
+    const float bx2 = b.x + b.width;
+    const float by2 = b.y + b.height;
+
+    const float ix1 = (a.x > b.x) ? a.x : b.x;
+    const float iy1 = (a.y > b.y) ? a.y : b.y;
+    const float ix2 = (ax2 < bx2) ? ax2 : bx2;
+    const float iy2 = (ay2 < by2) ? ay2 : by2;
+    const float iw = ix2 - ix1;
+    const float ih = iy2 - iy1;
+    if (iw <= 0.0f || ih <= 0.0f) {
+        return 0.0f;
+    }
+
+    const float inter = iw * ih;
+    const float union_area = a.width * a.height + b.width * b.height - inter;
+    if (union_area <= 1e-5f) {
+        return 0.0f;
+    }
+    return inter / union_area;
+}
+
+void init_multi_cat_tracker_state(MultiCatTrackerState *state) {
+    if (state == NULL) {
+        return;
+    }
+    state->initialized = 1;
+    state->next_track_id = 1;
+    state->active_track_id = -1;
+    for (int i = 0; i < YOLOV5_MAX_CAT_DETECTIONS; ++i) {
+        state->tracks[i].active = 0;
+        state->tracks[i].track_id = 0;
+        state->tracks[i].missed_frames = 0;
+        state->tracks[i].box.has_cat = 0;
+        state->tracks[i].box.confidence = 0.0f;
+        state->tracks[i].box.x = 0.0f;
+        state->tracks[i].box.y = 0.0f;
+        state->tracks[i].box.width = 0.0f;
+        state->tracks[i].box.height = 0.0f;
+    }
+}
+
+Yolov5CatTrackInfo update_multi_cat_tracker_and_get_active(MultiCatTrackerState *state, const Yolov5CatDetections *detections) {
+    Yolov5CatTrackInfo none = {0, 0, 0, 0, 0, 0};
+    if (state == NULL) {
+        return none;
+    }
+    if (!state->initialized) {
+        init_multi_cat_tracker_state(state);
+    }
+
+    const int det_count = (detections != NULL) ? detections->count : 0;
+    int det_used[YOLOV5_MAX_CAT_DETECTIONS] = {0};
+    int track_matched[YOLOV5_MAX_CAT_DETECTIONS] = {0};
+
+    for (int ti = 0; ti < YOLOV5_MAX_CAT_DETECTIONS; ++ti) {
+        if (!state->tracks[ti].active) continue;
+
+        float best_iou = 0.0f;
+        int best_di = -1;
+        for (int di = 0; di < det_count; ++di) {
+            if (det_used[di]) continue;
+            const float iou = bbox_iou(state->tracks[ti].box, detections->cats[di]);
+            if (iou > best_iou) {
+                best_iou = iou;
+                best_di = di;
+            }
+        }
+
+        if (best_di >= 0 && best_iou >= 0.2f) {
+            state->tracks[ti].box = detections->cats[best_di];
+            state->tracks[ti].missed_frames = 0;
+            det_used[best_di] = 1;
+            track_matched[ti] = 1;
+        }
+    }
+
+    for (int ti = 0; ti < YOLOV5_MAX_CAT_DETECTIONS; ++ti) {
+        if (!state->tracks[ti].active) continue;
+        if (track_matched[ti]) continue;
+        state->tracks[ti].missed_frames++;
+        if (state->tracks[ti].missed_frames > 12) {
+            if (state->active_track_id == state->tracks[ti].track_id) {
+                state->active_track_id = -1;
+            }
+            state->tracks[ti].active = 0;
+        }
+    }
+
+    for (int di = 0; di < det_count; ++di) {
+        if (det_used[di]) continue;
+        int slot = -1;
+        int oldest = -1;
+        for (int ti = 0; ti < YOLOV5_MAX_CAT_DETECTIONS; ++ti) {
+            if (!state->tracks[ti].active) {
+                slot = ti;
+                break;
+            }
+            if (state->tracks[ti].missed_frames > oldest) {
+                oldest = state->tracks[ti].missed_frames;
+                slot = ti;
+            }
+        }
+        state->tracks[slot].active = 1;
+        state->tracks[slot].track_id = state->next_track_id++;
+        state->tracks[slot].missed_frames = 0;
+        state->tracks[slot].box = detections->cats[di];
+    }
+
+    for (int ti = 0; ti < YOLOV5_MAX_CAT_DETECTIONS; ++ti) {
+        if (!state->tracks[ti].active) continue;
+        if (state->tracks[ti].track_id == state->active_track_id) {
+            return state->tracks[ti].box;
+        }
+    }
+
+    float best_conf = -1.0f;
+    int best_ti = -1;
+    for (int ti = 0; ti < YOLOV5_MAX_CAT_DETECTIONS; ++ti) {
+        if (!state->tracks[ti].active) continue;
+        if (state->tracks[ti].box.confidence > best_conf) {
+            best_conf = state->tracks[ti].box.confidence;
+            best_ti = ti;
+        }
+    }
+    if (best_ti >= 0) {
+        state->active_track_id = state->tracks[best_ti].track_id;
+        return state->tracks[best_ti].box;
+    }
+
+    return none;
+}
+
 Yolov5CatTrackInfo filter_cat_track(CatTrackFilterState *state, const Yolov5CatTrackInfo *raw_track) {
     Yolov5CatTrackInfo out = {0, 0, 0, 0, 0, 0};
     if (raw_track == NULL || !raw_track->has_cat) {

@@ -119,6 +119,40 @@ static enum CatPlayAlgorithm pick_other_algorithm(enum CatPlayAlgorithm current)
     return r == 0 ? CAT_PLAY_OVAL : CAT_PLAY_STARE_DART;
 }
 
+static void build_engagement_ranked_transition_weights(
+    const struct CatPlayState *state,
+    float weights[3]) {
+    // No hard-coded algorithm bias: transition probabilities are driven only by
+    // each algorithm's observed engagement ranking.
+    for (int i = 0; i < 3; ++i) {
+        weights[i] = clampf_local(state->algorithm_engagement_scores[i], 0.0f, 1.0f);
+    }
+}
+
+static enum CatPlayAlgorithm pick_engagement_ranked_alternate_algorithm(
+    const struct CatPlayState *state) {
+    float weights[3] = {0.0f, 0.0f, 0.0f};
+    build_engagement_ranked_transition_weights(state, weights);
+
+    // Always alternate away from the current play algorithm.
+    weights[state->algorithm] = 0.0f;
+
+    float total = weights[0] + weights[1] + weights[2];
+    if (total <= 0.0001f) {
+        return pick_other_algorithm(state->algorithm);
+    }
+
+    float r = random_float_range(0.0f, total);
+    if (r < weights[CAT_PLAY_OVAL]) {
+        return CAT_PLAY_OVAL;
+    }
+    r -= weights[CAT_PLAY_OVAL];
+    if (r < weights[CAT_PLAY_STARE_DART]) {
+        return CAT_PLAY_STARE_DART;
+    }
+    return CAT_PLAY_ZIGZAG_RETREAT;
+}
+
 static cv::Point2f build_oval_target(const Yolov5CatTrackInfo &cat, float phase, int frame_w, int frame_h) {
     const float center_x = cat.x + cat.width * 0.5f;
     const float center_y = cat.y + cat.height * 0.5f;
@@ -130,31 +164,27 @@ static cv::Point2f build_oval_target(const Yolov5CatTrackInfo &cat, float phase,
 
 static void maybe_transition_with_probability(struct CatPlayState *state, int percent) {
     if ((rand() % 100) < percent) {
-        state->algorithm = pick_other_algorithm(state->algorithm);
+        state->algorithm = pick_engagement_ranked_alternate_algorithm(state);
     }
 }
 
-static void update_engagement_score(struct CatPlayState *state, const cv::Point2f &cat_center, const cv::Point2f &laser) {
+static void update_engagement_score(struct CatPlayState *state, const cv::Point2f &cat_center, const cv::Point2f &laser, const Yolov5CatTrackInfo &cat) {
     // Heuristic: engagement increases when cat-laser distance changes (cat reacts).
     float d = point_distance(cat_center, laser);
     float reaction = fabsf(d - state->prev_cat_laser_dist);
     state->prev_cat_laser_dist = d;
     float signal = clampf_local(reaction / 25.0f, 0.0f, 1.0f);
+
+    // Boost engagement when cat goes for the dot while this algorithm is active.
+    const float catch_radius = clampf_local(0.18f * (cat.width + cat.height), 10.0f, 42.0f);
+    if (d <= catch_radius) {
+        signal = clampf_local(signal + 0.35f, 0.0f, 1.0f);
+    }
+
     state->engagement_score = 0.9f * state->engagement_score + 0.1f * signal;
-}
-
-static void apply_confidence_mode_bias(struct CatPlayState *state, float confidence) {
-    // Confidence-aware mode selection: lower confidence tends to stabilize on oval;
-    // stronger confidence can allow more novelty when engagement is weak.
-    if (confidence < 0.35f) {
-        state->algorithm = CAT_PLAY_OVAL;
-        return;
-    }
-
-    // If confidence is strong but engagement is low, escalate novelty.
-    if (confidence > 0.7f && state->engagement_score < 0.15f) {
-        state->algorithm = (rand() % 2 == 0) ? CAT_PLAY_STARE_DART : CAT_PLAY_ZIGZAG_RETREAT;
-    }
+    const int algo_index = (int)state->algorithm;
+    state->algorithm_engagement_scores[algo_index] =
+        0.9f * state->algorithm_engagement_scores[algo_index] + 0.1f * signal;
 }
 
 static void maybe_flip_oval_direction_on_catch(struct CatPlayState *state,
@@ -170,8 +200,10 @@ static void maybe_flip_oval_direction_on_catch(struct CatPlayState *state,
         return;
     }
 
-    // Randomized reaction: usually reverse direction, sometimes keep direction.
-    if ((rand() % 100) < 70) {
+    // Randomized reaction on catch: each catch event gets its own flip probability,
+    // then we sample whether orbit direction changes.
+    const float flip_chance = random_float_range(0.45f, 0.85f);
+    if (random_float_range(0.0f, 1.0f) < flip_chance) {
         state->oval_direction = -state->oval_direction;
     }
 
@@ -184,6 +216,9 @@ void init_cat_play_state(struct CatPlayState *state) {
     state->last_cat_center = cv::Point2f(0.0f, 0.0f);
     state->cat_still_time_sec = 0.0f;
     state->engagement_score = 0.0f;
+    state->algorithm_engagement_scores[CAT_PLAY_OVAL] = 1.0f;
+    state->algorithm_engagement_scores[CAT_PLAY_STARE_DART] = 1.0f;
+    state->algorithm_engagement_scores[CAT_PLAY_ZIGZAG_RETREAT] = 1.0f;
     state->prev_cat_laser_dist = 0.0f;
     state->session_time_sec = 0.0f;
     state->calm_time_sec = 0.0f;
@@ -212,8 +247,7 @@ cv::Point2f build_cat_play_target(
     (void)frame_index;
     const cv::Point2f cat_center(cat.x + cat.width * 0.5f, cat.y + cat.height * 0.5f);
 
-    update_engagement_score(state, cat_center, laser);
-    apply_confidence_mode_bias(state, cat.confidence);
+    update_engagement_score(state, cat_center, laser, cat);
 
     // Anti-fatigue: every ~120s of active play, insert a short calm interval.
     state->session_time_sec += dt_sec;
@@ -233,7 +267,7 @@ cv::Point2f build_cat_play_target(
         state->last_cat_center = cat_center;
     }
     if (state->cat_still_time_sec >= 60.0f) {
-        state->algorithm = pick_other_algorithm(state->algorithm);
+        state->algorithm = pick_engagement_ranked_alternate_algorithm(state);
         state->cat_still_time_sec = 0.0f;
     }
 

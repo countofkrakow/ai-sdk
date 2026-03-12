@@ -43,6 +43,7 @@ struct InferenceShared {
     int inference_running;
     int has_cat_info;
     Yolov5CatTrackInfo latest_track;
+    Yolov5CatDetections latest_detections;
 };
 
 struct InferenceThreadArgs {
@@ -231,6 +232,7 @@ static void *inference_thread_main(void *arg) {
         pthread_mutex_unlock(&args->shared->mutex);
 
         Yolov5CatTrackInfo track_info = {0, 0, 0, 0, 0, 0};
+        Yolov5CatDetections detections = {0};
 
         if (!frame.empty() && cv::imwrite(args->frame_file, frame)) {
             unsigned int file_size = 0;
@@ -240,13 +242,14 @@ static void *inference_thread_main(void *arg) {
                 awnn_set_input_buffers(args->context, input_buffers);
                 awnn_run(args->context);
                 float **results = awnn_get_output_buffers(args->context);
-                yolov5_post_process(args->frame_file, results, &track_info);
+                yolov5_post_process(args->frame_file, results, &track_info, &detections);
                 free(plant_data);
             }
         }
 
         pthread_mutex_lock(&args->shared->mutex);
         args->shared->latest_track = track_info;
+        args->shared->latest_detections = detections;
         args->shared->has_cat_info = 1;
         args->shared->inference_running = 0;
         pthread_mutex_unlock(&args->shared->mutex);
@@ -445,6 +448,8 @@ int main(int argc, char **argv) {
 
     ServoState servo_state = {0.0f, 0.0f};
     CatTrackFilterState track_filter = {0};
+    MultiCatTrackerState multi_cat_tracker = {0};
+    init_multi_cat_tracker_state(&multi_cat_tracker);
 
     // Deadman: if camera stream stalls, center servos and cut power.
     time_t last_frame_time = time(NULL);
@@ -501,11 +506,19 @@ int main(int argc, char **argv) {
         pthread_cond_signal(&inference_shared.cond);
 
         Yolov5CatTrackInfo raw_track = inference_shared.latest_track;
+        Yolov5CatDetections raw_detections = inference_shared.latest_detections;
         int has_track_info = inference_shared.has_cat_info;
         int inference_running = inference_shared.inference_running;
         pthread_mutex_unlock(&inference_shared.mutex);
 
-        Yolov5CatTrackInfo smoothed = filter_cat_track(&track_filter, (has_track_info ? &raw_track : NULL));
+        Yolov5CatTrackInfo active_track = {0, 0, 0, 0, 0, 0};
+        if (has_track_info) {
+            active_track = update_multi_cat_tracker_and_get_active(&multi_cat_tracker, &raw_detections);
+        }
+        if (!active_track.has_cat && has_track_info) {
+            active_track = raw_track;
+        }
+        Yolov5CatTrackInfo smoothed = filter_cat_track(&track_filter, (active_track.has_cat ? &active_track : NULL));
 
         if (smoothed.has_cat) {
             cv::Point2f frame_center((float)frame.cols * 0.5f, (float)frame.rows * 0.5f);
