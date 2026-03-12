@@ -28,6 +28,13 @@ enum NearMissTeasePhase {
     NEAR_MISS_PAUSE = 2,
 };
 
+enum PlayDirectorIntent {
+    DIRECTOR_INTENT_TEASE = 0,
+    DIRECTOR_INTENT_CHASE = 1,
+    DIRECTOR_INTENT_POUNCE_WINDOW = 2,
+    DIRECTOR_INTENT_RECOVER = 3,
+};
+
 struct CatPlayState {
     enum CatPlayAlgorithm algorithm;
 
@@ -49,6 +56,9 @@ struct CatPlayState {
     float close_chase_time_sec;
     float hesitation_pause_time_sec;
     float hesitation_cooldown_sec;
+
+    enum PlayDirectorIntent director_intent;
+    float director_time_remaining_sec;
 
     // Oval-mode orbit state: direction is +1/-1 for cw/ccw style phase motion.
     float oval_phase;

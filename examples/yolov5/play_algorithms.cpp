@@ -256,17 +256,55 @@ static void update_engagement_score(struct CatPlayState *state, const cv::Point2
         0.9f * state->algorithm_engagement_scores[algo_index] + 0.1f * signal;
 }
 
+
+
+static enum PlayDirectorIntent choose_next_director_intent(const struct CatPlayState *state) {
+    const float speed_norm = clampf_local(state->cat_speed_px_per_sec_ema / 220.0f, 0.0f, 1.0f);
+    const float engage = clampf_local(state->engagement_score, 0.0f, 1.0f);
+    const float catch_success = clampf_local(state->recent_catch_attempt_score, 0.0f, 1.0f);
+
+    float w[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    w[DIRECTOR_INTENT_TEASE] = 0.22f + 0.36f * (1.0f - engage);
+    w[DIRECTOR_INTENT_CHASE] = 0.18f + 0.62f * speed_norm;
+    w[DIRECTOR_INTENT_POUNCE_WINDOW] = 0.14f + 0.46f * catch_success + 0.10f * (1.0f - speed_norm);
+    w[DIRECTOR_INTENT_RECOVER] = 0.16f + 0.26f * clampf_local(speed_norm - engage, 0.0f, 1.0f);
+
+    float total = w[0] + w[1] + w[2] + w[3];
+    if (total <= 1e-5f) {
+        return DIRECTOR_INTENT_TEASE;
+    }
+
+    float r = random_float_range(0.0f, total);
+    for (int i = 0; i < 4; ++i) {
+        if (r < w[i]) {
+            return (enum PlayDirectorIntent)i;
+        }
+        r -= w[i];
+    }
+    return DIRECTOR_INTENT_RECOVER;
+}
+
+static void update_director_layer(struct CatPlayState *state, float dt_sec) {
+    state->director_time_remaining_sec -= dt_sec;
+    if (state->director_time_remaining_sec > 0.0f) {
+        return;
+    }
+
+    state->director_intent = choose_next_director_intent(state);
+    state->director_time_remaining_sec = random_float_range(5.0f, 15.0f);
+}
 static void maybe_start_near_miss_tease(
     struct CatPlayState *state,
     const Yolov5CatTrackInfo &cat,
-    float dt_sec) {
+    float dt_sec,
+    float director_tease_bias) {
     if (state->near_miss_phase != NEAR_MISS_OFF) {
         return;
     }
 
     // Trigger occasionally during oval play; stronger chance when engagement is low.
     const float low_engagement_boost = clampf_local(0.45f - state->engagement_score, 0.0f, 0.45f);
-    const float trigger_prob_per_sec = 0.08f + low_engagement_boost;
+    const float trigger_prob_per_sec = (0.08f + low_engagement_boost) * director_tease_bias;
     if (random_float_range(0.0f, 1.0f) > trigger_prob_per_sec * clampf_local(dt_sec, 0.0f, 1.0f)) {
         return;
     }
@@ -385,6 +423,8 @@ void init_cat_play_state(struct CatPlayState *state) {
     state->close_chase_time_sec = 0.0f;
     state->hesitation_pause_time_sec = 0.0f;
     state->hesitation_cooldown_sec = 0.0f;
+    state->director_intent = DIRECTOR_INTENT_TEASE;
+    state->director_time_remaining_sec = random_float_range(5.0f, 15.0f);
     state->oval_phase = 0.0f;
     state->oval_direction = 1;
     state->oval_direction_cooldown_sec = 0.0f;
@@ -422,6 +462,7 @@ cv::Point2f build_cat_play_target(
     update_engagement_score(state, cat_center, laser, cat);
     update_cat_velocity_signal(state, cat_center, dt_sec);
     apply_novelty_decay_recovery(state, dt_sec);
+    update_director_layer(state, dt_sec);
 
     // Anti-fatigue: every ~120s of active play, insert a short calm interval.
     state->session_time_sec += dt_sec;
@@ -474,9 +515,39 @@ cv::Point2f build_cat_play_target(
         state->cat_still_time_sec = 0.0f;
     }
 
+    float director_tease_bias = 1.0f;
+    float oval_speed_scale = 1.0f;
+    float zigzag_speed_scale = 1.0f;
+    float zigzag_duration_scale = 1.0f;
+    if (state->director_intent == DIRECTOR_INTENT_TEASE) {
+        director_tease_bias = 1.7f;
+        if (state->algorithm != CAT_PLAY_OVAL && random_float_range(0.0f, 1.0f) < 0.15f) {
+            state->algorithm = CAT_PLAY_OVAL;
+        }
+    } else if (state->director_intent == DIRECTOR_INTENT_CHASE) {
+        director_tease_bias = 0.8f;
+        zigzag_speed_scale = 1.30f;
+        zigzag_duration_scale = 0.75f;
+        if (state->algorithm == CAT_PLAY_OVAL && random_float_range(0.0f, 1.0f) < 0.2f) {
+            state->algorithm = CAT_PLAY_ZIGZAG_RETREAT;
+            state->zigzag_phase = ZIGZAG_APPROACH;
+        }
+    } else if (state->director_intent == DIRECTOR_INTENT_POUNCE_WINDOW) {
+        director_tease_bias = 0.7f;
+        oval_speed_scale = 0.55f;
+        if (state->algorithm != CAT_PLAY_OVAL && random_float_range(0.0f, 1.0f) < 0.25f) {
+            state->algorithm = CAT_PLAY_OVAL;
+        }
+    } else { // DIRECTOR_INTENT_RECOVER
+        director_tease_bias = 0.55f;
+        oval_speed_scale = 0.5f;
+        zigzag_speed_scale = 0.8f;
+        zigzag_duration_scale = 1.2f;
+    }
+
     if (state->algorithm == CAT_PLAY_OVAL) {
         maybe_flip_oval_direction_on_catch(state, cat, cat_center, laser, dt_sec);
-        maybe_start_near_miss_tease(state, cat, dt_sec);
+        maybe_start_near_miss_tease(state, cat, dt_sec, director_tease_bias);
 
         cv::Point2f tease_target(0.0f, 0.0f);
         if (maybe_build_near_miss_tease_target(state, cat, cat_center, laser, frame_w, frame_h, dt_sec, algo_name_out, &tease_target)) {
@@ -486,7 +557,7 @@ cv::Point2f build_cat_play_target(
         *algo_name_out = "oval";
         const float speed_norm = clampf_local(state->cat_speed_px_per_sec_ema / 220.0f, 0.0f, 1.0f);
         const float direction = (state->oval_direction >= 0) ? 1.0f : -1.0f;
-        const float oval_phase_step = 0.10f + 0.16f * speed_norm;
+        const float oval_phase_step = (0.10f + 0.16f * speed_norm) * oval_speed_scale;
         state->oval_phase += direction * oval_phase_step;
 
         // If cat movement is low, occasionally bait with a dart pattern.
@@ -541,11 +612,11 @@ cv::Point2f build_cat_play_target(
         const float amp_x = clampf_local(cat.width * 0.45f, 12.0f, 80.0f);
         const float amp_y = clampf_local(cat.height * 0.18f, 6.0f, 35.0f);
         const float speed_norm = clampf_local(state->cat_speed_px_per_sec_ema / 220.0f, 0.0f, 1.0f);
-        const float t = state->zigzag_phase_time_sec * (6.0f + 6.0f * speed_norm);
+        const float t = state->zigzag_phase_time_sec * (6.0f + 6.0f * speed_norm) * zigzag_speed_scale;
         const float saw = (fmodf(t, 2.0f) < 1.0f) ? 1.0f : -1.0f;
         cv::Point2f p(state->zigzag_front_point.x + saw * amp_x,
                       state->zigzag_front_point.y + sinf(t * 1.7f) * amp_y);
-        const float shake_duration_sec = 3.2f - 1.6f * speed_norm;
+        const float shake_duration_sec = (3.2f - 1.6f * speed_norm) * zigzag_duration_scale;
         if (state->zigzag_phase_time_sec >= shake_duration_sec) {
             state->zigzag_phase = ZIGZAG_RETREAT;
             state->zigzag_retreat_point = furthest_frame_corner_from_point(laser, frame_w, frame_h);
