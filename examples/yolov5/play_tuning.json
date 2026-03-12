@@ -1,65 +1,120 @@
 {
+  "_comment": "Gameplay tuning file for cat laser-play behaviors. Note: strict JSON has no native comments, so explanatory text is stored in *_comment fields and ignored by the loader.",
   "catch_radius": {
+    "_comment": "Defines when the laser is considered close enough to be a 'catch attempt'. Used by engagement/challenge logic and catch-sensitive transitions.",
     "base_scale": 0.18,
+    "base_scale_comment": "Base multiplier for (cat.width + cat.height). Higher = larger catch radius overall.",
     "min_radius": 10.0,
+    "min_radius_comment": "Absolute lower bound in pixels for computed catch radius.",
     "max_radius": 42.0,
+    "max_radius_comment": "Absolute upper bound in pixels for computed catch radius.",
     "confidence_norm_offset": 0.25,
+    "confidence_norm_offset_comment": "Confidence value mapped to 0.0 in normalization.",
     "confidence_norm_scale": 0.60,
+    "confidence_norm_scale_comment": "Normalization width; larger means confidence effects are gentler.",
     "confidence_scale_base": 0.90,
+    "confidence_scale_base_comment": "Base radius multiplier at low normalized confidence.",
     "confidence_scale_gain": 0.25,
+    "confidence_scale_gain_comment": "Additional radius multiplier gained at high normalized confidence.",
     "near_dist_diag_scale": 1.10,
+    "near_dist_diag_scale_comment": "Distance (in bbox diagonals) considered 'near' for catch-radius scaling.",
     "far_dist_diag_scale": 2.20,
+    "far_dist_diag_scale_comment": "Distance (in bbox diagonals) considered 'far' for catch-radius scaling.",
     "distance_scale_base": 0.88,
+    "distance_scale_base_comment": "Base radius multiplier when laser is farther from cat.",
     "distance_scale_gain": 0.20,
+    "distance_scale_gain_comment": "Extra multiplier as laser gets closer to cat.",
     "clamp_min": 8.0,
-    "clamp_max": 52.0
+    "clamp_min_comment": "Final hard minimum for catch radius after all scaling.",
+    "clamp_max": 52.0,
+    "clamp_max_comment": "Final hard maximum for catch radius after all scaling."
   },
   "algorithms": {
+    "_comment": "Per-algorithm motion style controls. Director/challenge logic still modulates these at runtime.",
     "common": {
-      "speed_norm_divisor": 220.0
+      "speed_norm_divisor": 220.0,
+      "speed_norm_divisor_comment": "Cat speed (px/s) mapped near 1.0 for speed-driven decisions."
     },
     "oval": {
+      "_comment": "Oval orbit around cat center; often used for tease/chase baseline behavior.",
       "margin_scale": 1.15,
+      "margin_scale_comment": "Scales base oval radius from cat box dimensions.",
       "rx_min": 12.0,
+      "rx_min_comment": "Minimum base X radius before arc/challenge scaling.",
       "rx_max": 140.0,
+      "rx_max_comment": "Maximum base X radius before arc/challenge scaling.",
       "ry_min": 12.0,
+      "ry_min_comment": "Minimum base Y radius before arc/challenge scaling.",
       "ry_max": 140.0,
+      "ry_max_comment": "Maximum base Y radius before arc/challenge scaling.",
       "scaled_min": 10.0,
-      "scaled_max": 220.0
+      "scaled_min_comment": "Minimum final oval radius after all scaling.",
+      "scaled_max": 220.0,
+      "scaled_max_comment": "Maximum final oval radius after all scaling."
     },
     "near_miss": {
+      "_comment": "Near-miss tease bursts: fast circular dodges just outside catch radius, followed by short pauses.",
       "trigger_base": 0.08,
+      "trigger_base_comment": "Base per-second probability to start near-miss tease when allowed.",
       "low_engagement_threshold": 0.45,
+      "low_engagement_threshold_comment": "Below this engagement level, near-miss trigger probability gets boosted.",
       "radius_min": 1.10,
+      "radius_min_comment": "Lower near-miss radius scale multiplier relative to catch radius.",
       "radius_max": 1.40,
+      "radius_max_comment": "Upper near-miss radius scale multiplier relative to catch radius.",
       "pause_min_base": 0.30,
+      "pause_min_base_comment": "Base lower bound (sec) for near-miss pause interval.",
       "pause_min_gain": 0.35,
+      "pause_min_gain_comment": "Extra lower-bound pause time when catch success is low.",
       "pause_max_base": 0.65,
-      "pause_max_gain": 0.55
+      "pause_max_base_comment": "Base upper bound (sec) for near-miss pause interval.",
+      "pause_max_gain": 0.55,
+      "pause_max_gain_comment": "Extra upper-bound pause time when catch success is low."
     },
     "stare_dart": {
+      "_comment": "Hold-and-dart pattern: laser pauses (stare) then darts to new positions.",
       "hold_min_sec": 2.0,
+      "hold_min_sec_comment": "Short hold lower bound when entering stare-dart from oval.",
       "hold_max_sec": 6.0,
+      "hold_max_sec_comment": "Short hold upper bound when entering stare-dart from oval.",
       "long_hold_min_sec": 5.0,
+      "long_hold_min_sec_comment": "Main hold lower bound used during ongoing stare-dart cycles.",
       "long_hold_max_sec": 30.0,
+      "long_hold_max_sec_comment": "Main hold upper bound used during ongoing stare-dart cycles.",
       "low_speed_threshold": 0.25,
-      "low_speed_dart_prob": 0.02
+      "low_speed_threshold_comment": "If normalized cat speed is below this, oval may switch into stare-dart.",
+      "low_speed_dart_prob": 0.02,
+      "low_speed_dart_prob_comment": "Base probability factor for low-speed oval -> stare-dart transition."
     },
     "zigzag": {
+      "_comment": "Approach-shake-retreat pattern for high-energy chase sequences.",
       "front_y_offset": 0.25,
+      "front_y_offset_comment": "Front-point offset from cat top (fraction of cat height).",
       "front_reach_threshold_px": 18.0,
-      "retreat_reach_threshold_px": 20.0
+      "front_reach_threshold_px_comment": "Distance threshold to switch from approach to shake.",
+      "retreat_reach_threshold_px": 20.0,
+      "retreat_reach_threshold_px_comment": "Distance threshold to switch from retreat to return."
     }
   },
   "confidence_fallback": {
+    "_comment": "Detector-confidence conditioned behavior fallback. Lower confidence => calmer, wider, less twitchy motion.",
     "speed_scale_min": 0.70,
+    "speed_scale_min_comment": "Minimum speed scale at very low confidence.",
     "speed_scale_gain": 0.55,
+    "speed_scale_gain_comment": "Speed scale increase as confidence rises.",
     "arc_scale_gain": 0.30,
+    "arc_scale_gain_comment": "Arc expansion factor at low confidence (larger arcs reduce apparent jitter).",
     "hold_scale_gain": 1.10,
+    "hold_scale_gain_comment": "Extra hold duration at low confidence.",
     "dart_scale_min": 0.35,
+    "dart_scale_min_comment": "Minimum dart/transition aggressiveness at low confidence.",
     "dart_scale_gain": 0.85,
+    "dart_scale_gain_comment": "How much dart aggressiveness increases with confidence.",
     "transition_scale_base": 0.55,
+    "transition_scale_base_comment": "Base transition probability scaling at low confidence.",
     "transition_scale_gain": 0.90,
-    "zigzag_duration_low_conf_gain": 0.45
+    "transition_scale_gain_comment": "Additional transition scaling at high confidence.",
+    "zigzag_duration_low_conf_gain": 0.45,
+    "zigzag_duration_low_conf_gain_comment": "Extra zigzag shake duration multiplier under low confidence."
   }
 }

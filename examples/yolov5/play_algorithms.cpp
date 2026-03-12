@@ -794,6 +794,13 @@ cv::Point2f build_cat_play_target(
     const char **algo_name_out) {
     ensure_tuning_initialized();
     (void)frame_index;
+    // Gameplay intent map:
+    // - OVAL: baseline orbit/tease motion around cat (primary default behavior).
+    // - STARE_DART: hold still to lure focus, then dart to trigger pounce.
+    // - ZIGZAG_RETREAT: high-arousal chase micro-bursts with retreat windows.
+    //
+    // Director intent and engagement/challenge scores modulate these patterns,
+    // while detection confidence adds a fallback style layer (calmer when low).
     const float behavior_confidence = clampf_local(detection_confidence, 0.0f, 1.0f);
     const float confidence_norm = clampf_local((behavior_confidence - 0.30f) / 0.60f, 0.0f, 1.0f);
     const float low_confidence = 1.0f - confidence_norm;
@@ -898,6 +905,7 @@ cv::Point2f build_cat_play_target(
     zigzag_duration_scale *= (1.0f + g_tuning.confidence_fallback.zigzag_duration_low_conf_gain * low_confidence);
 
     if (state->algorithm == CAT_PLAY_OVAL) {
+        // OVAL branch: smooth, circular prey motion with optional near-miss tease inserts.
         maybe_flip_oval_direction_on_catch(state, cat, behavior_confidence, cat_center, laser, dt_sec);
         maybe_start_near_miss_tease(state, cat, dt_sec, director_tease_bias);
 
@@ -927,6 +935,8 @@ cv::Point2f build_cat_play_target(
     }
 
     if (state->algorithm == CAT_PLAY_STARE_DART) {
+        // STARE_DART branch: alternate between stillness (attention anchor)
+        // and sudden relocation (prey escape cue).
         *algo_name_out = "stare_dart";
         if (state->stare_dart_phase == STARE_DART_HOLD) {
             if (state->stare_dart_hold_time_sec <= 0.0f) {
@@ -955,6 +965,8 @@ cv::Point2f build_cat_play_target(
     }
 
     *algo_name_out = "zigzag_retreat";
+    // ZIGZAG_RETREAT branch: approach, lateral shake near the cat, then retreat.
+    // This creates a challenge ladder-friendly burst pattern for chase periods.
     if (state->zigzag_phase == ZIGZAG_APPROACH) {
         state->zigzag_front_point = clamp_point_to_frame(cv::Point2f(cat_center.x, cat.y - cat.height * g_tuning.zigzag.front_y_offset), frame_w, frame_h);
         if (point_distance(laser, state->zigzag_front_point) < g_tuning.zigzag.front_reach_threshold_px) {
