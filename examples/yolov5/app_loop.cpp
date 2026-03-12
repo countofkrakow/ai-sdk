@@ -25,6 +25,17 @@ struct InferenceThreadArgs {
     DebugTrace *trace;
 };
 
+struct AutonomousBaitState {
+    int initialized;
+    cv::Point2f wander_target;
+    cv::Point2f edge_anchor;
+    float leg_time_left_sec;
+    float linger_time_left_sec;
+    float roam_radius_px;
+    float orbit_phase;
+    int mode;
+};
+
 static double now_sec() {
     struct timeval tv;
     gettimeofday(&tv, NULL);
@@ -34,6 +45,101 @@ static double now_sec() {
 static float random_float_range(float min_v, float max_v) {
     const float r = (float)rand() / (float)RAND_MAX;
     return min_v + (max_v - min_v) * r;
+}
+
+static cv::Point2f random_frame_point(int frame_w, int frame_h, float margin_px) {
+    return cv::Point2f(
+        random_float_range(margin_px, (float)frame_w - margin_px),
+        random_float_range(margin_px, (float)frame_h - margin_px));
+}
+
+static cv::Point2f blend_towards(const cv::Point2f &from, const cv::Point2f &to, float alpha) {
+    const float a = clampf(alpha, 0.0f, 1.0f);
+    return cv::Point2f(from.x + (to.x - from.x) * a, from.y + (to.y - from.y) * a);
+}
+
+static cv::Point2f update_autonomous_prey_target(AutonomousBaitState *state,
+                                                  const cv::Point2f &laser,
+                                                  int frame_w,
+                                                  int frame_h,
+                                                  float dt_sec,
+                                                  float session_time_sec,
+                                                  const char **algo_name_out,
+                                                  enum PlayDirectorIntent *intent_out,
+                                                  float *engagement_out,
+                                                  float *intensity_hint_out) {
+    if (!state->initialized) {
+        state->initialized = 1;
+        state->wander_target = cv::Point2f((float)frame_w * 0.5f, (float)frame_h * 0.5f);
+        state->edge_anchor = random_frame_point(frame_w, frame_h, 16.0f);
+        state->leg_time_left_sec = random_float_range(0.6f, 1.3f);
+        state->linger_time_left_sec = 0.0f;
+        state->roam_radius_px = random_float_range(50.0f, 120.0f);
+        state->orbit_phase = random_float_range(0.0f, 6.2831853f);
+        state->mode = rand() % 4;
+    }
+
+    state->leg_time_left_sec -= dt_sec;
+    state->linger_time_left_sec -= dt_sec;
+    if (state->leg_time_left_sec <= 0.0f) {
+        state->mode = rand() % 4;
+        state->leg_time_left_sec = random_float_range(0.5f, 1.6f);
+        state->linger_time_left_sec = ((rand() % 100) < 22) ? random_float_range(0.10f, 0.35f) : 0.0f;
+        state->roam_radius_px = random_float_range(42.0f, 130.0f);
+        state->edge_anchor = random_frame_point(frame_w, frame_h, 14.0f);
+    }
+
+    const float margin = 10.0f;
+    cv::Point2f candidate = state->wander_target;
+    if (state->mode == 0) {
+        *algo_name_out = "no_cat_prowl_orbit";
+        *intent_out = DIRECTOR_INTENT_TEASE;
+        *engagement_out = 0.46f;
+        *intensity_hint_out = 0.52f;
+        state->orbit_phase += dt_sec * random_float_range(2.0f, 3.6f);
+        const cv::Point2f orbit_center = blend_towards(laser, state->edge_anchor, 0.42f);
+        candidate = cv::Point2f(
+            orbit_center.x + cosf(state->orbit_phase) * state->roam_radius_px,
+            orbit_center.y + sinf(state->orbit_phase * 1.35f) * state->roam_radius_px * 0.7f);
+    } else if (state->mode == 1) {
+        *algo_name_out = "no_cat_edge_skitter";
+        *intent_out = DIRECTOR_INTENT_CHASE;
+        *engagement_out = 0.62f;
+        *intensity_hint_out = 0.72f;
+        const int edge = rand() % 4;
+        if (edge == 0) candidate = cv::Point2f(random_float_range(margin, frame_w - margin), margin);
+        else if (edge == 1) candidate = cv::Point2f((float)frame_w - margin, random_float_range(margin, frame_h - margin));
+        else if (edge == 2) candidate = cv::Point2f(random_float_range(margin, frame_w - margin), (float)frame_h - margin);
+        else candidate = cv::Point2f(margin, random_float_range(margin, frame_h - margin));
+    } else if (state->mode == 2) {
+        *algo_name_out = "no_cat_stare_then_dart";
+        *intent_out = DIRECTOR_INTENT_POUNCE_WINDOW;
+        *engagement_out = 0.70f;
+        *intensity_hint_out = 0.78f;
+        if (state->linger_time_left_sec > 0.0f) {
+            candidate = laser;
+        } else {
+            candidate = random_frame_point(frame_w, frame_h, 20.0f);
+        }
+    } else {
+        *algo_name_out = "no_cat_corner_ambush";
+        *intent_out = DIRECTOR_INTENT_RECOVER;
+        *engagement_out = 0.38f;
+        *intensity_hint_out = 0.44f;
+        const cv::Point2f corners[] = {
+            cv::Point2f(margin, margin),
+            cv::Point2f((float)frame_w - margin, margin),
+            cv::Point2f((float)frame_w - margin, (float)frame_h - margin),
+            cv::Point2f(margin, (float)frame_h - margin),
+        };
+        const int idx = (int)(session_time_sec * 0.8f + rand() % 2) % 4;
+        candidate = blend_towards(corners[idx], laser, 0.20f);
+    }
+
+    candidate.x = clampf(candidate.x, margin, (float)frame_w - margin);
+    candidate.y = clampf(candidate.y, margin, (float)frame_h - margin);
+    state->wander_target = blend_towards(state->wander_target, candidate, 0.45f);
+    return state->wander_target;
 }
 
 static void apply_confidence_aware_servo_smoothing(ServoState *servo_state, const ServoState *pre_update_state, float confidence) {
@@ -256,6 +362,8 @@ int app_run_loop(AppRuntime *rt, volatile sig_atomic_t *stop_flag) {
         return -1;
     }
 
+    AutonomousBaitState autonomous = {};
+
     while (!(*stop_flag)) {
         FrameInputs in;
         if (read_next_frame(rt, &in) != 0) {
@@ -334,19 +442,56 @@ int app_run_loop(AppRuntime *rt, volatile sig_atomic_t *stop_flag) {
                             cmd.pan_deg,
                             cmd.tilt_deg);
         } else {
-            rt->servo_state.pan_deg = 0.0f;
-            rt->servo_state.tilt_deg = 0.0f;
+            const char *no_cat_algo = "no_cat_autonomous";
+            enum PlayDirectorIntent no_cat_intent = DIRECTOR_INTENT_TEASE;
+            float no_cat_engagement = 0.45f;
+            float no_cat_intensity_hint = 0.50f;
+            decision.target_point = update_autonomous_prey_target(
+                &autonomous,
+                rt->virtual_laser_point,
+                in.frame_bgr.cols,
+                in.frame_bgr.rows,
+                rt->cfg.control_dt_sec,
+                rt->play_session_time_sec,
+                &no_cat_algo,
+                &no_cat_intent,
+                &no_cat_engagement,
+                &no_cat_intensity_hint);
+            decision.algorithm_name = no_cat_algo;
+            decision.engagement_score = no_cat_engagement;
+            decision.director_intent = no_cat_intent;
+            decision.intensity_scale = clampf(
+                compute_laser_intensity_scale(no_cat_intent, no_cat_engagement, no_cat_algo, rt->play_session_time_sec) *
+                    (0.55f + 0.45f * no_cat_intensity_hint),
+                0.20f,
+                0.82f);
+            decision.has_target = 1;
+
+            ServoState pre_update = rt->servo_state;
+            cv::Point2f frame_center((float)in.frame_bgr.cols * 0.5f, (float)in.frame_bgr.rows * 0.5f);
+            update_servo_state(&rt->servo_state, frame_center, decision.target_point, in.frame_bgr.cols, in.frame_bgr.rows);
+            apply_intensity_motion_style(&rt->servo_state, &pre_update, decision.intensity_scale, decision.director_intent);
+
+            const unsigned int effective_on_ticks = (unsigned int)(
+                clampf((float)rt->laser_pwm_on_ticks * decision.intensity_scale, 0.0f, (float)rt->cfg.laser_pwm_cycle_ticks) + 0.5f);
+            const int laser_on_this_tick = (effective_on_ticks > 0) && (rt->laser_pwm_tick < effective_on_ticks);
+            rt->laser_pwm_tick = (rt->laser_pwm_tick + 1) % rt->cfg.laser_pwm_cycle_ticks;
+
             cmd.pan_deg = rt->servo_state.pan_deg;
             cmd.tilt_deg = rt->servo_state.tilt_deg;
-            cmd.laser_on = 1;
-            cmd.effective_on_ticks = rt->laser_pwm_on_ticks;
+            cmd.laser_on = laser_on_this_tick;
+            cmd.effective_on_ticks = effective_on_ticks;
 
-            rt->virtual_laser_point = cv::Point2f((float)in.frame_bgr.cols * 0.5f, (float)in.frame_bgr.rows * 0.5f);
-            rt->play_session_time_sec = 0.0f;
-            play_engine_reset(rt->play_engine);
+            rt->virtual_laser_point = decision.target_point;
+            rt->play_session_time_sec += rt->cfg.control_dt_sec;
 
-            debug_trace_log(&rt->trace, DEBUG_LOG_INFO, "TRACK", "No cat%s; holding center servo=(%.2f,%.2f)",
+            debug_trace_log(&rt->trace, DEBUG_LOG_INFO, "PLAY", "No cat%s; algo=%s engage=%.2f intensity=%.2f target=(%.1f,%.1f) servo=(%.2f,%.2f)",
                             perception.inference_running ? " (inference busy)" : "",
+                            decision.algorithm_name,
+                            decision.engagement_score,
+                            decision.intensity_scale,
+                            decision.target_point.x,
+                            decision.target_point.y,
                             cmd.pan_deg, cmd.tilt_deg);
         }
 
