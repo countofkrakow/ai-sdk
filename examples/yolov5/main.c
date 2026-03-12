@@ -136,6 +136,59 @@ static void apply_confidence_aware_servo_smoothing(
     servo_state->tilt_deg = pre_update_state->tilt_deg + alpha * (servo_state->tilt_deg - pre_update_state->tilt_deg);
 }
 
+static float compute_laser_intensity_scale(
+    const struct CatPlayState *play_state,
+    const char *algo_name,
+    float session_time_sec) {
+    float intensity = 0.25f + 0.75f * clampf(play_state->engagement_score, 0.0f, 1.0f);
+
+    if (play_state->director_intent == DIRECTOR_INTENT_CHASE) {
+        intensity += 0.20f;
+    } else if (play_state->director_intent == DIRECTOR_INTENT_TEASE) {
+        intensity -= 0.08f;
+    } else if (play_state->director_intent == DIRECTOR_INTENT_RECOVER) {
+        intensity -= 0.12f;
+    }
+
+    if (algo_name != NULL &&
+        (strcmp(algo_name, "hesitation_pause") == 0 || strcmp(algo_name, "near_miss_tease_pause") == 0)) {
+        intensity *= 0.60f;
+    }
+
+    // Subtle heartbeat pulse before/inside pounce windows to build anticipation.
+    if (play_state->director_intent == DIRECTOR_INTENT_POUNCE_WINDOW) {
+        const float phase = 2.0f * 3.1415926f * 1.8f * session_time_sec;
+        const float pulse = sinf(phase);
+        const float heartbeat = 0.88f + 0.12f * pulse * pulse;
+        intensity *= heartbeat;
+    }
+
+    // Tiny flicker at chase peaks (kept subtle to avoid harsh strobing).
+    if (play_state->director_intent == DIRECTOR_INTENT_CHASE && intensity > 0.78f) {
+        intensity += random_float_range(-0.05f, 0.05f);
+    }
+
+    return clampf(intensity, 0.08f, 1.0f);
+}
+
+static void apply_intensity_motion_style(
+    ServoState *servo_state,
+    const ServoState *pre_update_state,
+    float intensity_scale,
+    const struct CatPlayState *play_state) {
+    float style_alpha = 0.30f + 0.70f * clampf(intensity_scale, 0.0f, 1.0f);
+    if (play_state->director_intent == DIRECTOR_INTENT_CHASE) {
+        style_alpha = clampf(style_alpha + 0.08f, 0.0f, 1.0f);
+    }
+    if (play_state->director_intent == DIRECTOR_INTENT_TEASE ||
+        play_state->director_intent == DIRECTOR_INTENT_RECOVER) {
+        style_alpha = clampf(style_alpha - 0.12f, 0.0f, 1.0f);
+    }
+
+    servo_state->pan_deg = pre_update_state->pan_deg + style_alpha * (servo_state->pan_deg - pre_update_state->pan_deg);
+    servo_state->tilt_deg = pre_update_state->tilt_deg + style_alpha * (servo_state->tilt_deg - pre_update_state->tilt_deg);
+}
+
 static void update_random_scan_servo(
     ServoState *servo_state,
     struct RandomScanState *scan_state,
@@ -323,7 +376,7 @@ int main(int argc, char **argv) {
         return -1;
     }
 
-    const unsigned int laser_pwm_cycle_ticks = 10;
+    const unsigned int laser_pwm_cycle_ticks = 20;
     unsigned int laser_pwm_tick = 0;
     const unsigned int laser_pwm_on_ticks =
         (laser_brightness_percent * laser_pwm_cycle_ticks) / 100;
@@ -462,6 +515,11 @@ int main(int argc, char **argv) {
     }
 
     ServoState servo_state = {0.0f, 0.0f};
+    cv::Point2f virtual_laser_point(0.0f, 0.0f);
+    struct CatPlayState play_state = {0};
+    init_cat_play_state(&play_state);
+    int frame_index = 0;
+    float play_session_time_sec = 0.0f;
     CatTrackFilterState track_filter = {0};
     MultiCatTrackerState multi_cat_tracker = {0};
     init_multi_cat_tracker_state(&multi_cat_tracker);
@@ -537,23 +595,42 @@ int main(int argc, char **argv) {
 
         if (smoothed.has_cat) {
             cv::Point2f frame_center((float)frame.cols * 0.5f, (float)frame.rows * 0.5f);
-            cv::Point2f cat_center(smoothed.x + smoothed.width * 0.5f,
-                                   smoothed.y + smoothed.height * 0.5f);
+            if (frame_index == 0) {
+                virtual_laser_point = frame_center;
+            }
+
+            const char *algo_name = "unknown";
+            cv::Point2f play_target = build_cat_play_target(
+                &play_state,
+                smoothed,
+                virtual_laser_point,
+                frame_index,
+                frame.cols,
+                frame.rows,
+                control_dt_sec,
+                &algo_name);
+
             ServoState pre_update_state = servo_state;
-            update_servo_state(&servo_state, frame_center, cat_center, frame.cols, frame.rows);
+            update_servo_state(&servo_state, frame_center, play_target, frame.cols, frame.rows);
             apply_confidence_aware_servo_smoothing(&servo_state, &pre_update_state, smoothed.confidence);
+            const float intensity_scale = compute_laser_intensity_scale(&play_state, algo_name, play_session_time_sec);
+            apply_intensity_motion_style(&servo_state, &pre_update_state, intensity_scale, &play_state);
             servo_pwm_set_angle(&pan_pwm, servo_state.pan_deg);
             servo_pwm_set_angle(&tilt_pwm, servo_state.tilt_deg);
+            virtual_laser_point = play_target;
+            play_session_time_sec += control_dt_sec;
 
-            // Software PWM for brightness while operating on a detected cat.
-            const int laser_on_this_tick = (laser_pwm_on_ticks > 0) &&
-                (laser_pwm_tick < laser_pwm_on_ticks);
+            // Engagement-driven software PWM for brightness while a cat is active.
+            const unsigned int effective_on_ticks = (unsigned int)(
+                clampf((float)laser_pwm_on_ticks * intensity_scale, 0.0f, (float)laser_pwm_cycle_ticks) + 0.5f);
+            const int laser_on_this_tick = (effective_on_ticks > 0) &&
+                (laser_pwm_tick < effective_on_ticks);
             mosfet_gpio_set(&laser_gpio, laser_on_this_tick);
             laser_pwm_tick = (laser_pwm_tick + 1) % laser_pwm_cycle_ticks;
 
             fprintf(stderr,
-                    "cat_conf=%.2f target=(%.1f,%.1f) servo=(%.2f,%.2f)\n",
-                    smoothed.confidence, cat_center.x, cat_center.y,
+                    "cat_conf=%.2f algo=%s engage=%.2f intensity=%.2f target=(%.1f,%.1f) servo=(%.2f,%.2f)\n",
+                    smoothed.confidence, algo_name, play_state.engagement_score, intensity_scale, play_target.x, play_target.y,
                     servo_state.pan_deg, servo_state.tilt_deg);
         } else {
             servo_state.pan_deg = 0.0f;
@@ -561,6 +638,9 @@ int main(int argc, char **argv) {
             servo_pwm_set_angle(&pan_pwm, servo_state.pan_deg);
             servo_pwm_set_angle(&tilt_pwm, servo_state.tilt_deg);
             mosfet_gpio_set(&laser_gpio, true);
+            virtual_laser_point = cv::Point2f((float)frame.cols * 0.5f, (float)frame.rows * 0.5f);
+            play_session_time_sec = 0.0f;
+            init_cat_play_state(&play_state);
             fprintf(stderr, "No cat%s; holding center servo=(%.2f,%.2f)\n",
                     inference_running ? " (inference busy)" : "",
                     servo_state.pan_deg, servo_state.tilt_deg);
@@ -572,6 +652,7 @@ int main(int argc, char **argv) {
         int key = cv::waitKey(1);
         if (key == 'q' || key == 'Q' || key == 27) break;
         usleep(30000);
+        frame_index++;
     }
 
     pthread_mutex_lock(&inference_shared.mutex);
