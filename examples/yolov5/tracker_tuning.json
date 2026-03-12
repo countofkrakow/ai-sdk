@@ -1,0 +1,43 @@
+{
+  "_comment": "Tracker policy tuning for multi-cat target selection and identity filtering.",
+  "selection": {
+    "_comment": "Score composition for choosing active cat track.",
+    "confidence_weight": 0.38,
+    "age_weight": 0.16,
+    "stability_weight": 0.18,
+    "continuity_weight": 0.10,
+    "engagement_weight": 0.18,
+    "weights_comment": "Weights should roughly sum to 1.0.",
+    "age_norm_frames": 24.0,
+    "stability_norm_frames": 12.0,
+    "missed_norm_frames": 12.0,
+    "continuity_distance_norm_px": 220.0
+  },
+  "matching": {
+    "_comment": "Detection-to-track association limits.",
+    "iou_threshold": 0.2,
+    "stale_track_frames": 12
+  },
+  "engagement": {
+    "_comment": "EMA model for how responsive the active track appears to play motion.",
+    "decay_keep": 0.97,
+    "decay_keep_comment": "Per-frame passive decay for all active tracks.",
+    "response_diag_scale": 0.55,
+    "response_diag_scale_comment": "Normalizes motion by bbox diagonal before clamp.",
+    "response_motion_weight": 0.65,
+    "response_confidence_weight": 0.35,
+    "response_weights_comment": "Signal blend should usually sum to 1.0.",
+    "response_ema_keep": 0.85,
+    "response_ema_gain": 0.15
+  },
+  "filter": {
+    "_comment": "Temporal smoothing and identity lock behavior.",
+    "hold_miss_frames": 12,
+    "identity_lock_init_frames": 10,
+    "identity_jump_dist_px": 120.0,
+    "identity_confidence_override": 0.78,
+    "smoothing_alpha_high": 0.35,
+    "smoothing_alpha_low": 0.2,
+    "smoothing_high_confidence_threshold": 0.7
+  }
+}

@@ -49,6 +49,8 @@ struct CatTrackFilterState {
     int identity_lock_frames;
 };
 
+void reset_tracker_tuning_defaults(void);
+int load_tracker_tuning_json(const char *json_path);
 float clampf(float value, float min_v, float max_v);
 LaserDotObservation detect_laser_dot(const cv::Mat &frame_bgr);
 LaserDotObservation stabilize_laser_observation(LaserTrackState *state, const LaserDotObservation &raw);

@@ -402,6 +402,7 @@ int main(int argc, char **argv) {
     const int input_channels = 3;
     const float control_dt_sec = 0.03f;
     const char *play_tuning_json_path = "examples/yolov5/play_tuning.json";
+    const char *tracker_tuning_json_path = "examples/yolov5/tracker_tuning.json";
 
     srand((unsigned int)time(NULL));
 
@@ -409,6 +410,13 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Loaded play tuning config: %s\n", play_tuning_json_path);
     } else {
         fprintf(stderr, "Play tuning config not loaded (%s); using built-in defaults.\n", play_tuning_json_path);
+    }
+
+    reset_tracker_tuning_defaults();
+    if (load_tracker_tuning_json(tracker_tuning_json_path) == 0) {
+        fprintf(stderr, "Loaded tracker tuning config: %s\n", tracker_tuning_json_path);
+    } else {
+        fprintf(stderr, "Tracker tuning config not loaded (%s); using built-in defaults.\n", tracker_tuning_json_path);
     }
 
     cv::VideoCapture camera(camera_device, cv::CAP_V4L2);
