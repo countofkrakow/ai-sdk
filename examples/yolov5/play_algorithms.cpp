@@ -219,7 +219,13 @@ static void update_cat_velocity_signal(struct CatPlayState *state, const cv::Poi
         state->prev_velocity_cat_center = cat_center;
         state->cat_speed_px_per_sec_ema = 0.0f;
     state->was_within_catch_radius = 0;
+    state->was_near_target_zone = 0;
     state->recent_catch_attempt_score = 0.0f;
+    state->prev_engagement_cat_center = cv::Point2f(0.0f, 0.0f);
+    state->prev_engagement_laser_point = cv::Point2f(0.0f, 0.0f);
+    state->engagement_motion_initialized = 0;
+    state->dwell_near_target_time_sec = 0.0f;
+    state->disengaged_time_sec = 0.0f;
         return;
     }
 
@@ -228,21 +234,68 @@ static void update_cat_velocity_signal(struct CatPlayState *state, const cv::Poi
     state->cat_speed_px_per_sec_ema = 0.88f * state->cat_speed_px_per_sec_ema + 0.12f * inst_speed;
 }
 
-static void update_engagement_score(struct CatPlayState *state, const cv::Point2f &cat_center, const cv::Point2f &laser, const Yolov5CatTrackInfo &cat) {
-    // Heuristic: engagement increases when cat-laser distance changes (cat reacts).
+static void update_engagement_score(struct CatPlayState *state, const cv::Point2f &cat_center, const cv::Point2f &laser, const Yolov5CatTrackInfo &cat, float dt_sec) {
+    // Engagement uses richer behavior cues:
+    // - distance reaction
+    // - heading alignment (cat motion toward laser)
+    // - dwell quality near target zone
+    // - re-engagement latency after temporary disengagement
     float d = point_distance(cat_center, laser);
     float reaction = fabsf(d - state->prev_cat_laser_dist);
     state->prev_cat_laser_dist = d;
+
+    if (!state->engagement_motion_initialized) {
+        state->engagement_motion_initialized = 1;
+        state->prev_engagement_cat_center = cat_center;
+        state->prev_engagement_laser_point = laser;
+    }
+
+    const cv::Point2f cat_motion = cat_center - state->prev_engagement_cat_center;
+    const float motion_mag = point_distance(cat_center, state->prev_engagement_cat_center);
+    const cv::Point2f laser_vec_prev = state->prev_engagement_laser_point - state->prev_engagement_cat_center;
+    const float laser_vec_mag = point_distance(state->prev_engagement_laser_point, state->prev_engagement_cat_center);
+    float heading_alignment = 0.5f;
+    if (motion_mag > 1e-3f && laser_vec_mag > 1e-3f) {
+        const float dot = cat_motion.x * laser_vec_prev.x + cat_motion.y * laser_vec_prev.y;
+        const float cos_a = clampf_local(dot / (motion_mag * laser_vec_mag), -1.0f, 1.0f);
+        heading_alignment = 0.5f * (cos_a + 1.0f);
+    }
+
+    state->prev_engagement_cat_center = cat_center;
+    state->prev_engagement_laser_point = laser;
+
     float signal = clampf_local(reaction / 25.0f, 0.0f, 1.0f);
+    signal = clampf_local(signal + 0.20f * heading_alignment, 0.0f, 1.0f);
 
     // Boost engagement when cat goes for the dot while this algorithm is active.
     const float catch_radius = compute_catch_radius(cat, d);
+    const float near_target_radius = 1.4f * catch_radius;
     const int within_catch_radius = (d <= catch_radius) ? 1 : 0;
+    const int near_target_zone = (d <= near_target_radius) ? 1 : 0;
     const int catch_enter_event = (within_catch_radius && !state->was_within_catch_radius) ? 1 : 0;
+    const int near_enter_event = (near_target_zone && !state->was_near_target_zone) ? 1 : 0;
+    state->was_near_target_zone = near_target_zone;
     state->was_within_catch_radius = within_catch_radius;
+
+    if (near_target_zone) {
+        state->dwell_near_target_time_sec = clampf_local(state->dwell_near_target_time_sec + dt_sec, 0.0f, 3.0f);
+        signal = clampf_local(signal + 0.18f * clampf_local(state->dwell_near_target_time_sec / 1.2f, 0.0f, 1.0f), 0.0f, 1.0f);
+    } else {
+        state->dwell_near_target_time_sec = clampf_local(state->dwell_near_target_time_sec - 0.7f * dt_sec, 0.0f, 3.0f);
+    }
 
     if (within_catch_radius) {
         signal = clampf_local(signal + 0.35f, 0.0f, 1.0f);
+    }
+
+    if (!near_target_zone) {
+        state->disengaged_time_sec = clampf_local(state->disengaged_time_sec + dt_sec, 0.0f, 10.0f);
+    } else {
+        if (near_enter_event && state->disengaged_time_sec > 0.25f) {
+            const float latency_bonus = 1.0f - clampf_local(state->disengaged_time_sec / 3.5f, 0.0f, 1.0f);
+            signal = clampf_local(signal + 0.22f * latency_bonus, 0.0f, 1.0f);
+        }
+        state->disengaged_time_sec = 0.0f;
     }
 
     // Track recent successful catch attempts (distance entering catch radius)
@@ -412,7 +465,13 @@ void init_cat_play_state(struct CatPlayState *state) {
     state->prev_velocity_cat_center = cv::Point2f(0.0f, 0.0f);
     state->cat_speed_px_per_sec_ema = 0.0f;
     state->was_within_catch_radius = 0;
+    state->was_near_target_zone = 0;
     state->recent_catch_attempt_score = 0.0f;
+    state->prev_engagement_cat_center = cv::Point2f(0.0f, 0.0f);
+    state->prev_engagement_laser_point = cv::Point2f(0.0f, 0.0f);
+    state->engagement_motion_initialized = 0;
+    state->dwell_near_target_time_sec = 0.0f;
+    state->disengaged_time_sec = 0.0f;
     state->engagement_score = 0.0f;
     state->algorithm_engagement_scores[CAT_PLAY_OVAL] = 1.0f;
     state->algorithm_engagement_scores[CAT_PLAY_STARE_DART] = 1.0f;
@@ -459,7 +518,7 @@ cv::Point2f build_cat_play_target(
     (void)frame_index;
     const cv::Point2f cat_center(cat.x + cat.width * 0.5f, cat.y + cat.height * 0.5f);
 
-    update_engagement_score(state, cat_center, laser, cat);
+    update_engagement_score(state, cat_center, laser, cat, dt_sec);
     update_cat_velocity_signal(state, cat_center, dt_sec);
     apply_novelty_decay_recovery(state, dt_sec);
     update_director_layer(state, dt_sec);
