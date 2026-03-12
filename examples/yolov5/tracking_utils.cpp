@@ -160,7 +160,8 @@ static float compute_track_selection_score(const MultiCatTrackerState *state, co
         continuity_score = 1.0f - clampf(d / 220.0f, 0.0f, 1.0f);
     }
 
-    return 0.48f * confidence_score + 0.22f * age_score + 0.20f * stability_score + 0.10f * continuity_score;
+    const float engagement_score = clampf(track.engagement_history, 0.0f, 1.0f);
+    return 0.38f * confidence_score + 0.16f * age_score + 0.18f * stability_score + 0.10f * continuity_score + 0.18f * engagement_score;
 }
 void init_multi_cat_tracker_state(MultiCatTrackerState *state) {
     if (state == NULL) {
@@ -177,6 +178,7 @@ void init_multi_cat_tracker_state(MultiCatTrackerState *state) {
         state->tracks[i].missed_frames = 0;
         state->tracks[i].age_frames = 0;
         state->tracks[i].consecutive_matches = 0;
+        state->tracks[i].engagement_history = 0.0f;
         state->tracks[i].box.has_cat = 0;
         state->tracks[i].box.confidence = 0.0f;
         state->tracks[i].box.x = 0.0f;
@@ -201,6 +203,11 @@ Yolov5CatTrackInfo update_multi_cat_tracker_and_get_active(MultiCatTrackerState 
 
     for (int ti = 0; ti < YOLOV5_MAX_CAT_DETECTIONS; ++ti) {
         if (!state->tracks[ti].active) continue;
+        state->tracks[ti].engagement_history = clampf(state->tracks[ti].engagement_history * 0.97f, 0.0f, 1.0f);
+    }
+
+    for (int ti = 0; ti < YOLOV5_MAX_CAT_DETECTIONS; ++ti) {
+        if (!state->tracks[ti].active) continue;
 
         float best_iou = 0.0f;
         int best_di = -1;
@@ -214,10 +221,21 @@ Yolov5CatTrackInfo update_multi_cat_tracker_and_get_active(MultiCatTrackerState 
         }
 
         if (best_di >= 0 && best_iou >= 0.2f) {
-            state->tracks[ti].box = detections->cats[best_di];
+            const Yolov5CatTrackInfo prev_box = state->tracks[ti].box;
+            const Yolov5CatTrackInfo next_box = detections->cats[best_di];
+            state->tracks[ti].box = next_box;
             state->tracks[ti].missed_frames = 0;
             state->tracks[ti].age_frames++;
             state->tracks[ti].consecutive_matches++;
+
+            if (state->tracks[ti].track_id == state->active_track_id) {
+                const float motion = cv::norm(bbox_center(next_box) - bbox_center(prev_box));
+                const float diag = cv::norm(cv::Point2f(next_box.width, next_box.height));
+                const float response = clampf((diag > 1e-3f) ? (motion / (0.55f * diag + 1e-3f)) : 0.0f, 0.0f, 1.0f);
+                const float response_signal = 0.65f * response + 0.35f * clampf(next_box.confidence, 0.0f, 1.0f);
+                state->tracks[ti].engagement_history = clampf(0.85f * state->tracks[ti].engagement_history + 0.15f * response_signal, 0.0f, 1.0f);
+            }
+
             det_used[best_di] = 1;
             track_matched[ti] = 1;
         }
@@ -232,8 +250,8 @@ Yolov5CatTrackInfo update_multi_cat_tracker_and_get_active(MultiCatTrackerState 
         if (state->tracks[ti].missed_frames > 12) {
             if (state->active_track_id == state->tracks[ti].track_id) {
                 state->active_track_id = -1;
-    state->has_last_active_center = 0;
-    state->last_active_center = cv::Point2f(0.0f, 0.0f);
+                state->has_last_active_center = 0;
+                state->last_active_center = cv::Point2f(0.0f, 0.0f);
             }
             state->tracks[ti].active = 0;
         }
@@ -258,6 +276,7 @@ Yolov5CatTrackInfo update_multi_cat_tracker_and_get_active(MultiCatTrackerState 
         state->tracks[slot].missed_frames = 0;
         state->tracks[slot].age_frames = 1;
         state->tracks[slot].consecutive_matches = 1;
+        state->tracks[slot].engagement_history = 0.0f;
         state->tracks[slot].box = detections->cats[di];
     }
 

@@ -27,6 +27,7 @@ struct MultiCatTrackEntry {
     int missed_frames;
     int age_frames;
     int consecutive_matches;
+    float engagement_history;
     Yolov5CatTrackInfo box;
 };
 
