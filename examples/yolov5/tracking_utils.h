@@ -19,6 +19,27 @@ struct LaserTrackState {
     float last_area;
 };
 
+
+
+struct MultiCatTrackEntry {
+    int active;
+    int track_id;
+    int missed_frames;
+    int age_frames;
+    int consecutive_matches;
+    float engagement_history;
+    Yolov5CatTrackInfo box;
+};
+
+struct MultiCatTrackerState {
+    int initialized;
+    int next_track_id;
+    int active_track_id;
+    int has_last_active_center;
+    cv::Point2f last_active_center;
+    MultiCatTrackEntry tracks[YOLOV5_MAX_CAT_DETECTIONS];
+};
+
 struct CatTrackFilterState {
     int initialized;
     Yolov5CatTrackInfo filtered;
@@ -28,9 +49,13 @@ struct CatTrackFilterState {
     int identity_lock_frames;
 };
 
+void reset_tracker_tuning_defaults(void);
+int load_tracker_tuning_json(const char *json_path);
 float clampf(float value, float min_v, float max_v);
 LaserDotObservation detect_laser_dot(const cv::Mat &frame_bgr);
 LaserDotObservation stabilize_laser_observation(LaserTrackState *state, const LaserDotObservation &raw);
+void init_multi_cat_tracker_state(MultiCatTrackerState *state);
+Yolov5CatTrackInfo update_multi_cat_tracker_and_get_active(MultiCatTrackerState *state, const Yolov5CatDetections *detections);
 Yolov5CatTrackInfo filter_cat_track(CatTrackFilterState *state, const Yolov5CatTrackInfo *raw_track);
 
 #endif

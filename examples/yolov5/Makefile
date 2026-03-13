@@ -9,7 +9,7 @@ INSTALL_PREFIX_NORM := $(if $(filter /,$(INSTALL_PREFIX)),/,$(patsubst %/,%,$(IN
 
 INCLUDE += -I$(INSTALL_PREFIX)/usr/include -I$(STAGING_DIR)/usr/include/opencv4 -I../libawnn_viplite -I../libawutils -I../../
 LIBS    += -L $(INSTALL_PREFIX)/usr/lib -L $(INSTALL_PREFIX)/usr/lib/aarch64-linux-gnu -Wl,-rpath-link,$(INSTALL_PREFIX)/usr/lib -Wl,-rpath-link,$(INSTALL_PREFIX)/usr/lib/aarch64-linux-gnu -lopencv_core -lopencv_imgcodecs -lopencv_imgproc -lopencv_videoio -lopencv_highgui -ljpeg -lperiphery
-SRCS    += main.c tracking_utils.cpp servo_control.cpp play_algorithms.cpp yolov5_post_process.cpp yolov5_pre_process.cpp ../libawnn_viplite/awnn_lib.c ../libawnn_viplite/awnn_quantize.c ../libawutils/image_utils.c
+SRCS    += main.c app_config.cpp app_init.cpp app_loop.cpp app_shutdown.cpp debug_trace.cpp play_engine.cpp tracking_utils.cpp servo_control.cpp play_algorithms.cpp play_tuning.cpp play_director_policy.cpp yolov5_post_process.cpp yolov5_pre_process.cpp ../libawnn_viplite/awnn_lib.c ../libawnn_viplite/awnn_quantize.c ../libawutils/image_utils.c
 
 # Prefer the system OpenCL SONAME to avoid accidentally picking an incompatible
 # vendor libOpenCL from other -L search paths (can cause OPENCL_1.x unresolved
