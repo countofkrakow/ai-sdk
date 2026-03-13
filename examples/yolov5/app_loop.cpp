@@ -29,11 +29,13 @@ struct AutonomousBaitState {
     int initialized;
     cv::Point2f wander_target;
     cv::Point2f edge_anchor;
+    cv::Point2f mode_target;
     float leg_time_left_sec;
     float linger_time_left_sec;
     float roam_radius_px;
     float orbit_phase;
     int mode;
+    int mode_target_valid;
 };
 
 static double now_sec() {
@@ -77,6 +79,7 @@ static cv::Point2f update_autonomous_prey_target(AutonomousBaitState *state,
         state->roam_radius_px = random_float_range(50.0f, 120.0f);
         state->orbit_phase = random_float_range(0.0f, 6.2831853f);
         state->mode = rand() % 4;
+        state->mode_target_valid = 0;
     }
 
     state->leg_time_left_sec -= dt_sec;
@@ -87,6 +90,7 @@ static cv::Point2f update_autonomous_prey_target(AutonomousBaitState *state,
         state->linger_time_left_sec = ((rand() % 100) < 22) ? random_float_range(0.10f, 0.35f) : 0.0f;
         state->roam_radius_px = random_float_range(42.0f, 130.0f);
         state->edge_anchor = random_frame_point(frame_w, frame_h, 14.0f);
+        state->mode_target_valid = 0;
     }
 
     const float margin = 10.0f;
@@ -106,11 +110,15 @@ static cv::Point2f update_autonomous_prey_target(AutonomousBaitState *state,
         *intent_out = DIRECTOR_INTENT_CHASE;
         *engagement_out = 0.62f;
         *intensity_hint_out = 0.72f;
-        const int edge = rand() % 4;
-        if (edge == 0) candidate = cv::Point2f(random_float_range(margin, frame_w - margin), margin);
-        else if (edge == 1) candidate = cv::Point2f((float)frame_w - margin, random_float_range(margin, frame_h - margin));
-        else if (edge == 2) candidate = cv::Point2f(random_float_range(margin, frame_w - margin), (float)frame_h - margin);
-        else candidate = cv::Point2f(margin, random_float_range(margin, frame_h - margin));
+        if (!state->mode_target_valid) {
+            const int edge = rand() % 4;
+            if (edge == 0) state->mode_target = cv::Point2f(random_float_range(margin, frame_w - margin), margin);
+            else if (edge == 1) state->mode_target = cv::Point2f((float)frame_w - margin, random_float_range(margin, frame_h - margin));
+            else if (edge == 2) state->mode_target = cv::Point2f(random_float_range(margin, frame_w - margin), (float)frame_h - margin);
+            else state->mode_target = cv::Point2f(margin, random_float_range(margin, frame_h - margin));
+            state->mode_target_valid = 1;
+        }
+        candidate = state->mode_target;
     } else if (state->mode == 2) {
         *algo_name_out = "no_cat_stare_then_dart";
         *intent_out = DIRECTOR_INTENT_POUNCE_WINDOW;
@@ -118,8 +126,13 @@ static cv::Point2f update_autonomous_prey_target(AutonomousBaitState *state,
         *intensity_hint_out = 0.78f;
         if (state->linger_time_left_sec > 0.0f) {
             candidate = laser;
+            state->mode_target_valid = 0;
         } else {
-            candidate = random_frame_point(frame_w, frame_h, 20.0f);
+            if (!state->mode_target_valid) {
+                state->mode_target = random_frame_point(frame_w, frame_h, 20.0f);
+                state->mode_target_valid = 1;
+            }
+            candidate = state->mode_target;
         }
     } else {
         *algo_name_out = "no_cat_corner_ambush";
@@ -132,8 +145,12 @@ static cv::Point2f update_autonomous_prey_target(AutonomousBaitState *state,
             cv::Point2f((float)frame_w - margin, (float)frame_h - margin),
             cv::Point2f(margin, (float)frame_h - margin),
         };
-        const int idx = (int)(session_time_sec * 0.8f + rand() % 2) % 4;
-        candidate = blend_towards(corners[idx], laser, 0.20f);
+        if (!state->mode_target_valid) {
+            const int idx = (int)(session_time_sec * 0.8f + rand() % 4) % 4;
+            state->mode_target = corners[idx];
+            state->mode_target_valid = 1;
+        }
+        candidate = blend_towards(state->mode_target, laser, 0.20f);
     }
 
     candidate.x = clampf(candidate.x, margin, (float)frame_w - margin);
@@ -363,6 +380,7 @@ int app_run_loop(AppRuntime *rt, volatile sig_atomic_t *stop_flag) {
     }
 
     AutonomousBaitState autonomous = {};
+    int had_cat_last_frame = 0;
 
     while (!(*stop_flag)) {
         FrameInputs in;
@@ -390,6 +408,10 @@ int app_run_loop(AppRuntime *rt, volatile sig_atomic_t *stop_flag) {
         ActuationCommand cmd = {};
 
         if (perception.filtered_track.has_cat) {
+            if (!had_cat_last_frame) {
+                play_engine_reset(rt->play_engine);
+                autonomous.initialized = 0;
+            }
             if (rt->frame_index == 0) {
                 rt->virtual_laser_point = cv::Point2f((float)in.frame_bgr.cols * 0.5f, (float)in.frame_bgr.rows * 0.5f);
             }
@@ -441,6 +463,7 @@ int app_run_loop(AppRuntime *rt, volatile sig_atomic_t *stop_flag) {
                             decision.target_point.y,
                             cmd.pan_deg,
                             cmd.tilt_deg);
+            had_cat_last_frame = 1;
         } else {
             const char *no_cat_algo = "no_cat_autonomous";
             enum PlayDirectorIntent no_cat_intent = DIRECTOR_INTENT_TEASE;
@@ -493,6 +516,7 @@ int app_run_loop(AppRuntime *rt, volatile sig_atomic_t *stop_flag) {
                             decision.target_point.x,
                             decision.target_point.y,
                             cmd.pan_deg, cmd.tilt_deg);
+            had_cat_last_frame = 0;
         }
 
         apply_actuation(rt, &cmd);
