@@ -30,6 +30,7 @@ int main(int argc, char **argv) {
     AppRuntime rt;
     if (app_runtime_init(&cfg, &rt) != 0) {
         fprintf(stderr, "Failed to initialize runtime\n");
+        app_runtime_shutdown(&rt, 1);
         return -1;
     }
 
