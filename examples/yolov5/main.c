@@ -679,7 +679,8 @@ int main(int argc, char **argv) {
         return -1;
     }
 
-    // Bare-minimum startup: center servos while laser stays enabled during runtime.
+    // Bare-minimum startup: center servos while keeping the laser safely OFF
+    // until the supervisor explicitly arms play.
     if (servo_pwm_set_angle(&pan_pwm, 0.0f) < 0 ||
         servo_pwm_set_angle(&tilt_pwm, 0.0f) < 0) {
         mosfet_gpio_close(&pan_power_gpio);
@@ -869,12 +870,12 @@ int main(int argc, char **argv) {
         }
 
         update_supervisor_presence(&supervisor, scene_ptr, &smoothed, &wave_state, now_sec);
+        const int wake_event_active = supervisor.cat_present_confirmed || supervisor.wave_detected;
 
-        if (supervisor.state == SUPERVISOR_IDLE &&
-            (supervisor.cat_present_confirmed || supervisor.wave_detected || supervisor.human_present_confirmed)) {
+        if (supervisor.state == SUPERVISOR_IDLE && wake_event_active) {
             set_supervisor_state(&supervisor, SUPERVISOR_DETECT, now_sec);
         } else if (supervisor.state == SUPERVISOR_DETECT) {
-            if (supervisor.cat_present_confirmed || supervisor.wave_detected || supervisor.human_present_confirmed) {
+            if (wake_event_active) {
                 if ((now_sec - supervisor.wake_signal_since_sec) >= 0.25) {
                     set_supervisor_state(&supervisor, SUPERVISOR_WAKE, now_sec);
                 }
@@ -906,12 +907,16 @@ int main(int argc, char **argv) {
                     init_bait_state(&bait_state);
                 }
                 supervisor.play_mode = PLAY_LOOP_BAIT;
+            } else if (!supervisor.cat_present_confirmed &&
+                       supervisor.human_present_confirmed &&
+                       (now_sec - supervisor.cat_last_seen_sec) > 60.0) {
+                set_supervisor_state(&supervisor, SUPERVISOR_DISENGAGE_TIMEOUT, now_sec);
             } else if (!supervisor.cat_present_confirmed && !supervisor.human_present_confirmed &&
                        (now_sec - fmax(supervisor.cat_last_seen_sec, supervisor.human_last_seen_sec)) >= 30.0) {
                 set_supervisor_state(&supervisor, SUPERVISOR_DISENGAGE_TIMEOUT, now_sec);
             }
         } else if (supervisor.state == SUPERVISOR_DISENGAGE_TIMEOUT) {
-            if (supervisor.cat_present_confirmed || supervisor.wave_detected || supervisor.human_present_confirmed) {
+            if (wake_event_active) {
                 set_supervisor_state(&supervisor, SUPERVISOR_WAKE, now_sec);
             } else if (state_elapsed_sec > 10.0) {
                 set_supervisor_state(&supervisor, SUPERVISOR_SLEEP, now_sec);
