@@ -28,9 +28,17 @@ struct CatTrackFilterState {
     int identity_lock_frames;
 };
 
+struct MultiCatTrackState {
+    int initialized;
+    Yolov5CatTrackInfo filtered;
+    int hold_miss_frames;
+    int identity_lock_frames;
+};
+
 float clampf(float value, float min_v, float max_v);
 LaserDotObservation detect_laser_dot(const cv::Mat &frame_bgr);
 LaserDotObservation stabilize_laser_observation(LaserTrackState *state, const LaserDotObservation &raw);
 Yolov5CatTrackInfo filter_cat_track(CatTrackFilterState *state, const Yolov5CatTrackInfo *raw_track);
+Yolov5CatTrackInfo select_multi_cat_track(MultiCatTrackState *state, const Yolov5SceneDetections *scene);
 
 #endif
