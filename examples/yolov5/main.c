@@ -184,6 +184,20 @@ static void init_supervisor_context(struct SupervisorContext *supervisor, double
     supervisor->human_last_seen_sec = -1000.0;
 }
 
+static void invalidate_inference_shared_state(struct InferenceShared *shared) {
+    if (shared == NULL) {
+        return;
+    }
+    shared->latest_frame.release();
+    shared->has_new_frame = 0;
+    shared->has_cat_info = 0;
+    shared->has_scene_info = 0;
+    shared->latest_track = (Yolov5CatTrackInfo){0, 0, 0, 0, 0, 0};
+    memset(&shared->latest_scene, 0, sizeof(shared->latest_scene));
+    shared->latest_scene_time_sec = 0.0;
+    shared->publish_generation++;
+}
+
 static float random_float_range(float min_v, float max_v) {
     const float r = (float)rand() / (float)RAND_MAX;
     return min_v + (max_v - min_v) * r;
@@ -299,6 +313,41 @@ static float tracked_box_iou(const Yolov5TrackedBox *a, const Yolov5TrackedBox *
     return intersection_area / union_area;
 }
 
+static int wave_person_matches_prior_track(const struct PersonWaveState *wave_state,
+                                           const Yolov5TrackedBox *candidate,
+                                           float *distance_out,
+                                           float *iou_out) {
+    if (distance_out != NULL) {
+        *distance_out = 0.0f;
+    }
+    if (iou_out != NULL) {
+        *iou_out = 0.0f;
+    }
+    if (wave_state == NULL || !wave_state->has_tracked_person || candidate == NULL) {
+        return 0;
+    }
+
+    const cv::Point2f previous_center = tracked_box_center(&wave_state->tracked_person);
+    const cv::Point2f candidate_center = tracked_box_center(candidate);
+    const float dx = candidate_center.x - previous_center.x;
+    const float dy = candidate_center.y - previous_center.y;
+    const float distance = sqrtf(dx * dx + dy * dy);
+    const float iou = tracked_box_iou(&wave_state->tracked_person, candidate);
+    const float distance_gate =
+        fmaxf(wave_state->tracked_person.width, wave_state->tracked_person.height) * 0.75f + 90.0f;
+
+    if (distance_out != NULL) {
+        *distance_out = distance;
+    }
+    if (iou_out != NULL) {
+        *iou_out = iou;
+    }
+    if (iou <= 0.0f) {
+        return 0;
+    }
+    return (iou > 0.08f || distance <= distance_gate);
+}
+
 static int select_wave_person_index(const struct PersonWaveState *wave_state,
                                     const Yolov5SceneDetections *scene,
                                     int *matched_prior_track) {
@@ -312,7 +361,6 @@ static int select_wave_person_index(const struct PersonWaveState *wave_state,
         return 0;
     }
 
-    const cv::Point2f previous_center = tracked_box_center(&wave_state->tracked_person);
     const float distance_gate =
         fmaxf(wave_state->tracked_person.width, wave_state->tracked_person.height) * 0.75f + 90.0f;
 
@@ -322,11 +370,9 @@ static int select_wave_person_index(const struct PersonWaveState *wave_state,
     float best_distance = 1e9f;
     for (int i = 0; i < scene->person_count; ++i) {
         const Yolov5TrackedBox *candidate = &scene->people[i];
-        const cv::Point2f center = tracked_box_center(candidate);
-        const float dx = center.x - previous_center.x;
-        const float dy = center.y - previous_center.y;
-        const float distance = sqrtf(dx * dx + dy * dy);
-        const float iou = tracked_box_iou(&wave_state->tracked_person, candidate);
+        float distance = 0.0f;
+        float iou = 0.0f;
+        (void)wave_person_matches_prior_track(wave_state, candidate, &distance, &iou);
         const float score =
             candidate->confidence * 1.5f +
             iou * 3.0f +
@@ -339,10 +385,11 @@ static int select_wave_person_index(const struct PersonWaveState *wave_state,
         }
     }
 
-    // Nearby zero-IoU detections can still be a different person in a crowded
-    // scene, so only preserve motion history when the selected box still
-    // overlaps the previous track.
-    if (best_iou > 0.0f && (best_iou > 0.08f || best_distance <= distance_gate)) {
+    if (wave_person_matches_prior_track(
+            wave_state,
+            &scene->people[best_index],
+            &best_distance,
+            &best_iou)) {
         if (matched_prior_track != NULL) {
             *matched_prior_track = 1;
         }
@@ -889,17 +936,7 @@ int main(int argc, char **argv) {
                 servo_rails_powered = 0;
                 deadman_active = 1;
                 pthread_mutex_lock(&inference_shared.mutex);
-                // Drop any queued pre-stall frame before advancing the publish
-                // generation so the worker cannot dequeue old imagery and
-                // repopulate cleared detections after recovery.
-                inference_shared.latest_frame.release();
-                inference_shared.has_new_frame = 0;
-                inference_shared.has_cat_info = 0;
-                inference_shared.has_scene_info = 0;
-                inference_shared.latest_track.has_cat = 0;
-                memset(&inference_shared.latest_scene, 0, sizeof(inference_shared.latest_scene));
-                inference_shared.latest_scene_time_sec = 0.0;
-                inference_shared.publish_generation++;
+                invalidate_inference_shared_state(&inference_shared);
                 pthread_mutex_unlock(&inference_shared.mutex);
                 multi_cat_track = (MultiCatTrackState){0};
                 laser_track = (LaserTrackState){0};
