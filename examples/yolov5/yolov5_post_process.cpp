@@ -370,7 +370,10 @@ static void draw_objects(const cv::Mat& bgr, const std::vector<Object>& objects)
 
 
 extern "C"{
-int yolov5_post_process(const char *imagepath, float **output, Yolov5CatTrackInfo *track_info)
+int yolov5_post_process(const char *imagepath,
+                        float **output,
+                        Yolov5CatTrackInfo *track_info,
+                        Yolov5SceneDetections *scene_detections)
 {
     printf("yolov5_postprocess.cpp run. \n");
 
@@ -383,6 +386,11 @@ int yolov5_post_process(const char *imagepath, float **output, Yolov5CatTrackInf
         track_info->width = 0.0f;
         track_info->height = 0.0f;
     }
+    if (scene_detections != NULL)
+    {
+        scene_detections->cat_count = 0;
+        scene_detections->person_count = 0;
+    }
 
     cv::Mat m = cv::imread(imagepath, 1);
     if (m.empty())
@@ -394,23 +402,44 @@ int yolov5_post_process(const char *imagepath, float **output, Yolov5CatTrackInf
     std::vector<Object> objects;
     detect_yolov5(m, objects, output);
 
-    if (track_info != NULL)
+    if (track_info != NULL || scene_detections != NULL)
     {
+        const int person_class_index = 0;
         const int cat_class_index = 15;
         for (size_t i = 0; i < objects.size(); ++i)
         {
             const Object &obj = objects[i];
-            if (obj.label != cat_class_index)
-                continue;
-
-            if (!track_info->has_cat || obj.prob > track_info->confidence)
+            if (obj.label == cat_class_index)
             {
-                track_info->has_cat = 1;
-                track_info->confidence = obj.prob;
-                track_info->x = obj.rect.x;
-                track_info->y = obj.rect.y;
-                track_info->width = obj.rect.width;
-                track_info->height = obj.rect.height;
+                if (track_info != NULL && (!track_info->has_cat || obj.prob > track_info->confidence))
+                {
+                    track_info->has_cat = 1;
+                    track_info->confidence = obj.prob;
+                    track_info->x = obj.rect.x;
+                    track_info->y = obj.rect.y;
+                    track_info->width = obj.rect.width;
+                    track_info->height = obj.rect.height;
+                }
+                if (scene_detections != NULL && scene_detections->cat_count < YOLOV5_MAX_SCENE_CATS)
+                {
+                    Yolov5TrackedBox *dst = &scene_detections->cats[scene_detections->cat_count++];
+                    dst->confidence = obj.prob;
+                    dst->x = obj.rect.x;
+                    dst->y = obj.rect.y;
+                    dst->width = obj.rect.width;
+                    dst->height = obj.rect.height;
+                }
+            }
+            else if (scene_detections != NULL &&
+                     obj.label == person_class_index &&
+                     scene_detections->person_count < YOLOV5_MAX_SCENE_PEOPLE)
+            {
+                Yolov5TrackedBox *dst = &scene_detections->people[scene_detections->person_count++];
+                dst->confidence = obj.prob;
+                dst->x = obj.rect.x;
+                dst->y = obj.rect.y;
+                dst->width = obj.rect.width;
+                dst->height = obj.rect.height;
             }
         }
     }
