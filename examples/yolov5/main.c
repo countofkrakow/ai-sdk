@@ -339,6 +339,9 @@ static int select_wave_person_index(const struct PersonWaveState *wave_state,
         }
     }
 
+    // Nearby zero-IoU detections can still be a different person in a crowded
+    // scene, so only preserve motion history when the selected box still
+    // overlaps the previous track.
     if (best_iou > 0.0f && (best_iou > 0.08f || best_distance <= distance_gate)) {
         if (matched_prior_track != NULL) {
             *matched_prior_track = 1;
@@ -886,6 +889,9 @@ int main(int argc, char **argv) {
                 servo_rails_powered = 0;
                 deadman_active = 1;
                 pthread_mutex_lock(&inference_shared.mutex);
+                // Drop any queued pre-stall frame before advancing the publish
+                // generation so the worker cannot dequeue old imagery and
+                // repopulate cleared detections after recovery.
                 inference_shared.latest_frame.release();
                 inference_shared.has_new_frame = 0;
                 inference_shared.has_cat_info = 0;
