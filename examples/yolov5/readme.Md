@@ -20,7 +20,7 @@ The program in `main.c` runs two cooperating loops:
 2. **Inference worker thread**
    - Waits for latest frame from main thread.
    - Runs model pre-process + inference + post-process.
-   - Publishes lightweight cat track info (`Yolov5CatTrackInfo`) back to main thread.
+   - Publishes compact scene detections (cats + people) plus the strongest cat track back to main thread.
 
 A shared struct protected by `pthread_mutex_t` + `pthread_cond_t` coordinates frame handoff and output track publication.
 
@@ -30,10 +30,13 @@ A shared struct protected by `pthread_mutex_t` + `pthread_cond_t` coordinates fr
 - Program orchestration and lifecycle.
 - Hardware bring-up for PWM and MOSFET/GPIO lines.
 - Inference thread creation and synchronization.
+- Resident supervisor loop and game-state orchestration.
 - Main control tick logic:
   - laser-dot detection + stabilization
-  - cat track filtering
-  - play-mode target generation
+  - detection-gated state machine (`IDLE` / `DETECT` / `WAKE` / `PLAY` / `DISENGAGE_TIMEOUT` / `SLEEP`)
+  - multi-cat target selection with identity stickiness
+  - coarse wave-like human motion wake heuristic
+  - play-mode target generation (`chase` vs `bait`)
   - servo update + laser on/off policy
 - Startup alignment sequence (center-line sweep pattern) for quick physical validation.
 - Deadman handling and cleanup paths.
@@ -44,7 +47,7 @@ A shared struct protected by `pthread_mutex_t` + `pthread_cond_t` coordinates fr
   - blob filtering by area/circularity
   - red-channel dominance check
 - Laser observation stabilization (brief hold through short misses).
-- Cat track smoothing / identity-stickiness helper (`filter_cat_track`) to reduce abrupt target switches.
+- Multi-cat selection and identity-stickiness helpers keep the active target stable when detections bounce between multiple cats.
 
 ### `play_algorithms.h/.cpp`
 - Behavior/state machine style logic for play patterns.
@@ -53,6 +56,7 @@ A shared struct protected by `pthread_mutex_t` + `pthread_cond_t` coordinates fr
   - current laser position
   - engagement heuristic over time
 - Includes “retreat/avoid through waypoints” style logic to keep motion playful and less likely to run through the cat bbox.
+- The main loop can also drop into a bait/lure pattern near the last-seen cat location when no cat is currently visible but a cat was seen recently.
 
 ### `servo_control.h/.cpp`
 - PWM wrappers and utility conversions for angle control.
@@ -61,7 +65,7 @@ A shared struct protected by `pthread_mutex_t` + `pthread_cond_t` coordinates fr
 
 ### `yolov5_post_process.h/.cpp`
 - Existing YOLOv5 decode + NMS path.
-- Extended to optionally emit `Yolov5CatTrackInfo` so main control code can consume a compact “best cat” track result.
+- Extended to optionally emit scene detections for cats and people, plus a compact “best cat” track result.
 
 ### `Makefile`
 - Adds new source modules and required linking (`pthread`, `periphery`, OpenCV, etc.) for the integrated runtime.
@@ -69,7 +73,10 @@ A shared struct protected by `pthread_mutex_t` + `pthread_cond_t` coordinates fr
 ## 3) Data contracts between modules
 
 ### `Yolov5CatTrackInfo`
-A compact transport struct containing whether cat was found plus bbox + confidence, used to decouple inference from control logic.
+A compact transport struct containing whether a primary cat target was found plus bbox + confidence, used to decouple inference from control logic.
+
+### `Yolov5SceneDetections`
+A fixed-size transport struct carrying multiple cat detections plus person detections so the supervisor can reason about multi-cat presence, human wake signals, and baiting windows.
 
 ### Laser observation structs
 `LaserDotObservation` and `LaserTrackState` represent raw detection and short-term stabilization state.
@@ -90,7 +97,7 @@ A compact transport struct containing whether cat was found plus bbox + confiden
 - Laser GPIO can be gated off during selected calm windows/conditions.
 - Startup laser alignment sequence for sanity-checking orientation and travel, followed by an explicit recenter to neutral pan/tilt before control loop start.
 - Laser-dot stabilization holds recent position through short detection dropouts.
-- Cat track filter includes smoothing and brief identity lock behavior to reduce rapid target switching.
+- Multi-cat target selection includes smoothing and identity lock behavior to reduce rapid cat switching when multiple cats are in frame.
 
 ## 6) Runtime tuning status (important)
 
@@ -110,15 +117,16 @@ Current defaults in `main.c` are set to:
 
 1. Grab frame from camera.
 2. Push latest frame for worker inference (non-blocking producer style).
-3. Pull latest cat track result (if available) and filter it.
-4. If a cat is present, steer servos toward cat bbox center.
-5. If no cat is present, hold servos at center.
-6. Keep laser enabled while rails are powered (deadman may disable on camera stall).
-7. Repeat.
+3. Pull latest scene detections (cats + people) from the worker thread.
+4. Update presence hysteresis and the supervisor state.
+5. If a cat is present, select a stable cat target and run active chase behavior.
+6. If no cat is visible but a cat was seen within the last minute, optionally run bait behavior near the last-seen cat location.
+7. If the room is empty or the state machine is idle/cooldown, keep the laser off and reduce inference cadence.
+8. Repeat.
 
 ## 9) Known limitations / next logical improvements
 
-- Add true multi-object tracking (ID association) instead of stickiness-only lock.
+- Replace the coarse person-bbox motion heuristic with a real pose/wave detector.
 - Expose laser CV thresholds as runtime tunables (env/config CLI).
 - Add telemetry log modes (CSV/JSON) to aid field tuning.
 - Optional stronger retreat planner if corner/collision behavior needs improvement.
@@ -156,4 +164,4 @@ This is useful for validating PWM + MOSFET power path behavior without running t
 
 ### Minimal control flow
 
-Servo/laser behavior is intentionally simplified: when a cat is detected, servos move toward cat bbox center; when no cat is detected, servos hold center; laser stays enabled while rails are powered.
+Servo/laser behavior is now supervisor-gated: the program idles at reduced cadence, wakes on cat/person activity, chases an actively selected cat when present, switches to bait behavior if a cat was seen recently, and turns the laser off again when the room is empty or cooling down.

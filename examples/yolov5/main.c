@@ -43,6 +43,9 @@ struct InferenceShared {
     int inference_running;
     int has_cat_info;
     Yolov5CatTrackInfo latest_track;
+    int has_scene_info;
+    Yolov5SceneDetections latest_scene;
+    double latest_scene_time_sec;
 };
 
 struct InferenceThreadArgs {
@@ -103,6 +106,58 @@ struct RandomScanState {
     int frames_until_retarget;
 };
 
+enum SupervisorState {
+    SUPERVISOR_IDLE = 0,
+    SUPERVISOR_DETECT = 1,
+    SUPERVISOR_WAKE = 2,
+    SUPERVISOR_PLAY = 3,
+    SUPERVISOR_DISENGAGE_TIMEOUT = 4,
+    SUPERVISOR_SLEEP = 5,
+};
+
+enum PlayLoopMode {
+    PLAY_LOOP_NONE = 0,
+    PLAY_LOOP_CHASE = 1,
+    PLAY_LOOP_BAIT = 2,
+};
+
+struct BaitState {
+    float orbit_phase;
+    float orbit_radius_x;
+    float orbit_radius_y;
+    int direction;
+};
+
+struct PersonWaveState {
+    int initialized;
+    cv::Point2f last_center;
+    int last_direction;
+    int direction_flips;
+    double last_motion_time_sec;
+    double wave_latched_until_sec;
+};
+
+struct SupervisorContext {
+    enum SupervisorState state;
+    enum PlayLoopMode play_mode;
+    double state_since_sec;
+    double cat_last_seen_sec;
+    double human_last_seen_sec;
+    double room_empty_since_sec;
+    double wake_signal_since_sec;
+    double last_detection_frame_sec;
+    int cat_present_frames;
+    int cat_absent_frames;
+    int human_present_frames;
+    int human_absent_frames;
+    int room_empty_confirmed;
+    int cat_present_confirmed;
+    int human_present_confirmed;
+    int wave_detected;
+    cv::Point2f last_cat_center;
+    Yolov5CatTrackInfo last_cat_track;
+};
+
 static const float RANDOM_MIN_SPEED_DEG_PER_SEC = 8.0f;
 static const float RANDOM_MAX_SPEED_DEG_PER_SEC = 30.0f;
 
@@ -148,6 +203,172 @@ static void update_random_scan_servo(
 
     servo_state->pan_deg = clampf(servo_state->pan_deg, -45.0f, 45.0f);
     servo_state->tilt_deg = clampf(servo_state->tilt_deg, -45.0f, 45.0f);
+}
+
+static double monotonic_time_sec(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
+}
+
+static const char *supervisor_state_name(enum SupervisorState state) {
+    switch (state) {
+        case SUPERVISOR_IDLE: return "IDLE";
+        case SUPERVISOR_DETECT: return "DETECT";
+        case SUPERVISOR_WAKE: return "WAKE";
+        case SUPERVISOR_PLAY: return "PLAY";
+        case SUPERVISOR_DISENGAGE_TIMEOUT: return "DISENGAGE_TIMEOUT";
+        case SUPERVISOR_SLEEP: return "SLEEP";
+        default: return "UNKNOWN";
+    }
+}
+
+static void set_supervisor_state(struct SupervisorContext *ctx,
+                                 enum SupervisorState next_state,
+                                 double now_sec) {
+    if (ctx->state == next_state) {
+        return;
+    }
+    fprintf(stderr, "Supervisor transition: %s -> %s\n",
+            supervisor_state_name(ctx->state),
+            supervisor_state_name(next_state));
+    ctx->state = next_state;
+    ctx->state_since_sec = now_sec;
+    if (next_state != SUPERVISOR_PLAY) {
+        ctx->play_mode = PLAY_LOOP_NONE;
+    }
+    if (next_state == SUPERVISOR_DETECT || next_state == SUPERVISOR_WAKE) {
+        ctx->wake_signal_since_sec = now_sec;
+    }
+}
+
+static void init_bait_state(struct BaitState *bait_state) {
+    bait_state->orbit_phase = 0.0f;
+    bait_state->orbit_radius_x = 48.0f;
+    bait_state->orbit_radius_y = 24.0f;
+    bait_state->direction = 1;
+}
+
+static cv::Point2f clamp_point_to_frame_local(const cv::Point2f &p, int frame_w, int frame_h) {
+    return cv::Point2f(clampf(p.x, 0.0f, (float)frame_w - 1.0f),
+                       clampf(p.y, 0.0f, (float)frame_h - 1.0f));
+}
+
+static cv::Point2f build_bait_target(struct BaitState *bait_state,
+                                     const struct SupervisorContext *ctx,
+                                     int frame_w,
+                                     int frame_h,
+                                     float dt_sec) {
+    cv::Point2f anchor((float)frame_w * 0.5f, (float)frame_h * 0.5f);
+    if (ctx->last_cat_track.has_cat) {
+        anchor.x = ctx->last_cat_track.x + ctx->last_cat_track.width * 0.5f;
+        anchor.y = ctx->last_cat_track.y + ctx->last_cat_track.height * 0.35f;
+        bait_state->orbit_radius_x = clampf(ctx->last_cat_track.width * 0.7f, 30.0f, 120.0f);
+        bait_state->orbit_radius_y = clampf(ctx->last_cat_track.height * 0.45f, 18.0f, 70.0f);
+    }
+
+    bait_state->orbit_phase += dt_sec * 2.8f * (float)bait_state->direction;
+    if (bait_state->orbit_phase > 6.28318f || bait_state->orbit_phase < -6.28318f) {
+        bait_state->orbit_phase = 0.0f;
+        bait_state->direction = -bait_state->direction;
+    }
+
+    cv::Point2f lure(anchor.x + cosf(bait_state->orbit_phase) * bait_state->orbit_radius_x,
+                     anchor.y + sinf(bait_state->orbit_phase * 1.7f) * bait_state->orbit_radius_y);
+    return clamp_point_to_frame_local(lure, frame_w, frame_h);
+}
+
+static void update_wave_state(struct PersonWaveState *wave_state,
+                              const Yolov5SceneDetections *scene,
+                              double now_sec,
+                              int frame_w) {
+    if (scene == NULL || scene->person_count <= 0) {
+        wave_state->initialized = 0;
+        wave_state->last_direction = 0;
+        wave_state->direction_flips = 0;
+        return;
+    }
+
+    const Yolov5TrackedBox *person = &scene->people[0];
+    cv::Point2f center(person->x + person->width * 0.5f, person->y + person->height * 0.5f);
+    if (!wave_state->initialized) {
+        wave_state->initialized = 1;
+        wave_state->last_center = center;
+        wave_state->last_motion_time_sec = now_sec;
+        return;
+    }
+
+    const float delta_x = center.x - wave_state->last_center.x;
+    const float normalized_motion = fabsf(delta_x) / fmaxf((float)frame_w, 1.0f);
+    int direction = 0;
+    if (normalized_motion > 0.035f) {
+        direction = (delta_x > 0.0f) ? 1 : -1;
+    }
+
+    if (direction != 0) {
+        if (wave_state->last_direction != 0 &&
+            direction != wave_state->last_direction &&
+            (now_sec - wave_state->last_motion_time_sec) < 1.25) {
+            wave_state->direction_flips++;
+        } else if ((now_sec - wave_state->last_motion_time_sec) > 1.25) {
+            wave_state->direction_flips = 0;
+        }
+        wave_state->last_direction = direction;
+        wave_state->last_motion_time_sec = now_sec;
+    }
+
+    if (wave_state->direction_flips >= 2) {
+        wave_state->wave_latched_until_sec = now_sec + 1.5;
+        wave_state->direction_flips = 0;
+    }
+
+    wave_state->last_center = center;
+}
+
+static void update_supervisor_presence(struct SupervisorContext *ctx,
+                                       const Yolov5SceneDetections *scene,
+                                       const Yolov5CatTrackInfo *tracked_cat,
+                                       const struct PersonWaveState *wave_state,
+                                       double now_sec) {
+    const int cat_present = (tracked_cat != NULL && tracked_cat->has_cat);
+    const int human_present = (scene != NULL && scene->person_count > 0);
+
+    if (cat_present) {
+        ctx->cat_present_frames = (ctx->cat_present_frames < 8) ? ctx->cat_present_frames + 1 : 8;
+        ctx->cat_absent_frames = 0;
+        ctx->cat_last_seen_sec = now_sec;
+        ctx->cat_present_confirmed = (ctx->cat_present_frames >= 2);
+        ctx->last_cat_track = *tracked_cat;
+        ctx->last_cat_center = cv::Point2f(tracked_cat->x + tracked_cat->width * 0.5f,
+                                           tracked_cat->y + tracked_cat->height * 0.5f);
+    } else {
+        ctx->cat_present_frames = 0;
+        ctx->cat_absent_frames = (ctx->cat_absent_frames < 32) ? ctx->cat_absent_frames + 1 : 32;
+        if (ctx->cat_absent_frames >= 8) {
+            ctx->cat_present_confirmed = 0;
+        }
+    }
+
+    if (human_present) {
+        ctx->human_present_frames = (ctx->human_present_frames < 8) ? ctx->human_present_frames + 1 : 8;
+        ctx->human_absent_frames = 0;
+        ctx->human_last_seen_sec = now_sec;
+        ctx->human_present_confirmed = (ctx->human_present_frames >= 2);
+    } else {
+        ctx->human_present_frames = 0;
+        ctx->human_absent_frames = (ctx->human_absent_frames < 32) ? ctx->human_absent_frames + 1 : 32;
+        if (ctx->human_absent_frames >= 8) {
+            ctx->human_present_confirmed = 0;
+        }
+    }
+
+    ctx->wave_detected = (wave_state != NULL && wave_state->wave_latched_until_sec > now_sec);
+    ctx->room_empty_confirmed = !ctx->cat_present_confirmed && !ctx->human_present_confirmed;
+    if (!ctx->room_empty_confirmed) {
+        ctx->room_empty_since_sec = 0.0;
+    } else if (ctx->room_empty_since_sec <= 0.0) {
+        ctx->room_empty_since_sec = now_sec;
+    }
 }
 
 
@@ -259,6 +480,8 @@ static void *inference_thread_main(void *arg) {
         pthread_mutex_unlock(&args->shared->mutex);
 
         Yolov5CatTrackInfo track_info = {0, 0, 0, 0, 0, 0};
+        Yolov5SceneDetections scene_info;
+        memset(&scene_info, 0, sizeof(scene_info));
 
         if (!frame.empty() && cv::imwrite(args->frame_file, frame)) {
             unsigned int file_size = 0;
@@ -268,7 +491,7 @@ static void *inference_thread_main(void *arg) {
                 awnn_set_input_buffers(args->context, input_buffers);
                 awnn_run(args->context);
                 float **results = awnn_get_output_buffers(args->context);
-                yolov5_post_process(args->frame_file, results, &track_info);
+                yolov5_post_process(args->frame_file, results, &track_info, &scene_info);
                 free(plant_data);
             }
         }
@@ -276,6 +499,9 @@ static void *inference_thread_main(void *arg) {
         pthread_mutex_lock(&args->shared->mutex);
         args->shared->latest_track = track_info;
         args->shared->has_cat_info = 1;
+        args->shared->latest_scene = scene_info;
+        args->shared->has_scene_info = 1;
+        args->shared->latest_scene_time_sec = monotonic_time_sec();
         args->shared->inference_running = 0;
         pthread_mutex_unlock(&args->shared->mutex);
     }
@@ -420,7 +646,7 @@ int main(int argc, char **argv) {
             mosfet_gpiochip_path, laser_gpio_line);
     if (mosfet_gpio_set(&pan_power_gpio, true) < 0 ||
         mosfet_gpio_set(&tilt_power_gpio, true) < 0 ||
-        mosfet_gpio_set(&laser_gpio, true) < 0) {
+        mosfet_gpio_set(&laser_gpio, false) < 0) {
         mosfet_gpio_close(&pan_power_gpio);
         mosfet_gpio_close(&tilt_power_gpio);
         mosfet_gpio_close(&laser_gpio);
@@ -453,7 +679,7 @@ int main(int argc, char **argv) {
         return -1;
     }
 
-    // Bare-minimum startup: center servos while laser stays enabled during runtime.
+    // Bare-minimum startup: center servos while laser remains safely off until armed.
     if (servo_pwm_set_angle(&pan_pwm, 0.0f) < 0 ||
         servo_pwm_set_angle(&tilt_pwm, 0.0f) < 0) {
         mosfet_gpio_close(&pan_power_gpio);
@@ -492,6 +718,9 @@ int main(int argc, char **argv) {
     inference_shared.inference_running = 0;
     inference_shared.has_cat_info = 0;
     inference_shared.latest_track.has_cat = 0;
+    inference_shared.has_scene_info = 0;
+    memset(&inference_shared.latest_scene, 0, sizeof(inference_shared.latest_scene));
+    inference_shared.latest_scene_time_sec = 0.0;
 
     struct InferenceThreadArgs worker_args = {context, inference_frame_file, &inference_shared};
     pthread_t inference_thread;
@@ -510,7 +739,23 @@ int main(int argc, char **argv) {
     }
 
     ServoState servo_state = {0.0f, 0.0f};
-    CatTrackFilterState track_filter = {0};
+    CatPlayState play_state;
+    init_cat_play_state(&play_state);
+    MultiCatTrackState multi_cat_track = {0};
+    LaserTrackState laser_track = {0};
+    struct RandomScanState random_scan_state = {0};
+    retarget_random_scan(&random_scan_state);
+    struct BaitState bait_state;
+    init_bait_state(&bait_state);
+    struct PersonWaveState wave_state;
+    memset(&wave_state, 0, sizeof(wave_state));
+    struct SupervisorContext supervisor;
+    memset(&supervisor, 0, sizeof(supervisor));
+    supervisor.state = SUPERVISOR_IDLE;
+    supervisor.state_since_sec = monotonic_time_sec();
+    supervisor.play_mode = PLAY_LOOP_NONE;
+    supervisor.cat_last_seen_sec = -1000.0;
+    supervisor.human_last_seen_sec = -1000.0;
 
     // Deadman: if camera stream stalls, center servos and cut power.
     time_t last_frame_time = time(NULL);
@@ -530,6 +775,19 @@ int main(int argc, char **argv) {
                 mosfet_gpio_set(&laser_gpio, false);
                 servo_rails_powered = 0;
                 deadman_active = 1;
+                pthread_mutex_lock(&inference_shared.mutex);
+                inference_shared.has_cat_info = 0;
+                inference_shared.has_scene_info = 0;
+                inference_shared.latest_track.has_cat = 0;
+                memset(&inference_shared.latest_scene, 0, sizeof(inference_shared.latest_scene));
+                inference_shared.latest_scene_time_sec = 0.0;
+                pthread_mutex_unlock(&inference_shared.mutex);
+                multi_cat_track = (MultiCatTrackState){0};
+                laser_track = (LaserTrackState){0};
+                init_cat_play_state(&play_state);
+                init_bait_state(&bait_state);
+                supervisor.play_mode = PLAY_LOOP_NONE;
+                set_supervisor_state(&supervisor, SUPERVISOR_IDLE, monotonic_time_sec());
                 fprintf(stderr, "Deadman engaged: camera stalled, servo rails powered off.\n");
             }
             usleep(100000);
@@ -543,8 +801,8 @@ int main(int argc, char **argv) {
                 usleep(100000);
                 continue;
             }
-            // Keep laser ON during normal runtime after deadman recovery.
-            mosfet_gpio_set(&laser_gpio, true);
+            // Keep laser OFF until the supervisor re-arms play after recovery.
+            mosfet_gpio_set(&laser_gpio, false);
             servo_rails_powered = 1;
             deadman_active = 0;
             fprintf(stderr, "Deadman cleared: camera recovered, servo rails re-enabled.\n");
@@ -561,46 +819,175 @@ int main(int argc, char **argv) {
 
         last_frame_time = time(NULL);
 
-        pthread_mutex_lock(&inference_shared.mutex);
-        inference_shared.latest_frame = frame.clone();
-        inference_shared.has_new_frame = 1;
-        pthread_cond_signal(&inference_shared.cond);
+        const double now_sec = monotonic_time_sec();
+        const double state_elapsed_sec = now_sec - supervisor.state_since_sec;
+        int inference_tick_divider = 1;
+        switch (supervisor.state) {
+            case SUPERVISOR_IDLE:
+            case SUPERVISOR_SLEEP:
+                inference_tick_divider = 6;
+                break;
+            case SUPERVISOR_DETECT:
+            case SUPERVISOR_DISENGAGE_TIMEOUT:
+                inference_tick_divider = 3;
+                break;
+            case SUPERVISOR_WAKE:
+            case SUPERVISOR_PLAY:
+            default:
+                inference_tick_divider = 1;
+                break;
+        }
 
-        Yolov5CatTrackInfo raw_track = inference_shared.latest_track;
+        static unsigned long frame_tick = 0;
+        frame_tick++;
+        if ((frame_tick % (unsigned long)inference_tick_divider) == 0) {
+            pthread_mutex_lock(&inference_shared.mutex);
+            inference_shared.latest_frame = frame.clone();
+            inference_shared.has_new_frame = 1;
+            pthread_cond_signal(&inference_shared.cond);
+            pthread_mutex_unlock(&inference_shared.mutex);
+        }
+
+        pthread_mutex_lock(&inference_shared.mutex);
+        Yolov5SceneDetections latest_scene = inference_shared.latest_scene;
         int has_track_info = inference_shared.has_cat_info;
+        int has_scene_info = inference_shared.has_scene_info;
+        double latest_scene_time_sec = inference_shared.latest_scene_time_sec;
         int inference_running = inference_shared.inference_running;
         pthread_mutex_unlock(&inference_shared.mutex);
 
-        Yolov5CatTrackInfo smoothed = filter_cat_track(&track_filter, (has_track_info ? &raw_track : NULL));
+        const double scene_fresh_timeout_sec =
+            (supervisor.state == SUPERVISOR_IDLE || supervisor.state == SUPERVISOR_SLEEP) ? 1.0 : 0.5;
+        const int scene_is_fresh = has_scene_info &&
+            ((now_sec - latest_scene_time_sec) <= scene_fresh_timeout_sec);
+        Yolov5SceneDetections *scene_ptr = scene_is_fresh ? &latest_scene : NULL;
+        update_wave_state(&wave_state, scene_ptr, now_sec, frame.cols);
 
-        if (smoothed.has_cat) {
-            cv::Point2f frame_center((float)frame.cols * 0.5f, (float)frame.rows * 0.5f);
-            cv::Point2f cat_center(smoothed.x + smoothed.width * 0.5f,
-                                   smoothed.y + smoothed.height * 0.5f);
-            update_servo_state(&servo_state, frame_center, cat_center, frame.cols, frame.rows);
-            servo_pwm_set_angle(&pan_pwm, servo_state.pan_deg);
-            servo_pwm_set_angle(&tilt_pwm, servo_state.tilt_deg);
+        Yolov5CatTrackInfo smoothed = select_multi_cat_track(&multi_cat_track, scene_ptr);
+        if (!has_track_info && !scene_is_fresh) {
+            smoothed.has_cat = 0;
+        }
 
-            // Software PWM for brightness while operating on a detected cat.
-            const int laser_on_this_tick = (laser_pwm_on_ticks > 0) &&
-                (laser_pwm_tick < laser_pwm_on_ticks);
-            mosfet_gpio_set(&laser_gpio, laser_on_this_tick);
-            laser_pwm_tick = (laser_pwm_tick + 1) % laser_pwm_cycle_ticks;
+        update_supervisor_presence(&supervisor, scene_ptr, &smoothed, &wave_state, now_sec);
+        const int wake_event_active = supervisor.cat_present_confirmed || supervisor.wave_detected;
 
-            fprintf(stderr,
-                    "cat_conf=%.2f target=(%.1f,%.1f) servo=(%.2f,%.2f)\n",
-                    smoothed.confidence, cat_center.x, cat_center.y,
-                    servo_state.pan_deg, servo_state.tilt_deg);
+        if (supervisor.state == SUPERVISOR_IDLE && wake_event_active) {
+            set_supervisor_state(&supervisor, SUPERVISOR_DETECT, now_sec);
+        } else if (supervisor.state == SUPERVISOR_DETECT) {
+            if (wake_event_active) {
+                if ((now_sec - supervisor.wake_signal_since_sec) >= 0.25) {
+                    set_supervisor_state(&supervisor, SUPERVISOR_WAKE, now_sec);
+                }
+            } else if (state_elapsed_sec > 1.5) {
+                set_supervisor_state(&supervisor, SUPERVISOR_IDLE, now_sec);
+            }
+        } else if (supervisor.state == SUPERVISOR_WAKE) {
+            if (supervisor.cat_present_confirmed) {
+                init_cat_play_state(&play_state);
+                supervisor.play_mode = PLAY_LOOP_CHASE;
+                set_supervisor_state(&supervisor, SUPERVISOR_PLAY, now_sec);
+            } else if ((now_sec - supervisor.cat_last_seen_sec) <= 60.0 &&
+                       supervisor.human_present_confirmed) {
+                init_bait_state(&bait_state);
+                supervisor.play_mode = PLAY_LOOP_BAIT;
+                set_supervisor_state(&supervisor, SUPERVISOR_PLAY, now_sec);
+            } else if (state_elapsed_sec > 3.0) {
+                set_supervisor_state(&supervisor, SUPERVISOR_DISENGAGE_TIMEOUT, now_sec);
+            }
+        } else if (supervisor.state == SUPERVISOR_PLAY) {
+            if (supervisor.cat_present_confirmed) {
+                if (supervisor.play_mode != PLAY_LOOP_CHASE) {
+                    init_cat_play_state(&play_state);
+                }
+                supervisor.play_mode = PLAY_LOOP_CHASE;
+            } else if ((now_sec - supervisor.cat_last_seen_sec) <= 60.0 &&
+                       supervisor.human_present_confirmed) {
+                if (supervisor.play_mode != PLAY_LOOP_BAIT) {
+                    init_bait_state(&bait_state);
+                }
+                supervisor.play_mode = PLAY_LOOP_BAIT;
+            } else if (!supervisor.cat_present_confirmed &&
+                       supervisor.human_present_confirmed &&
+                       (now_sec - supervisor.cat_last_seen_sec) > 60.0) {
+                set_supervisor_state(&supervisor, SUPERVISOR_DISENGAGE_TIMEOUT, now_sec);
+            } else if (!supervisor.cat_present_confirmed && !supervisor.human_present_confirmed &&
+                       (now_sec - fmax(supervisor.cat_last_seen_sec, supervisor.human_last_seen_sec)) >= 30.0) {
+                set_supervisor_state(&supervisor, SUPERVISOR_DISENGAGE_TIMEOUT, now_sec);
+            }
+        } else if (supervisor.state == SUPERVISOR_DISENGAGE_TIMEOUT) {
+            if (wake_event_active) {
+                set_supervisor_state(&supervisor, SUPERVISOR_WAKE, now_sec);
+            } else if (state_elapsed_sec > 10.0) {
+                set_supervisor_state(&supervisor, SUPERVISOR_SLEEP, now_sec);
+            }
+        } else if (supervisor.state == SUPERVISOR_SLEEP) {
+            if (state_elapsed_sec > 0.1) {
+                set_supervisor_state(&supervisor, SUPERVISOR_IDLE, now_sec);
+            }
+        }
+
+        LaserDotObservation raw_laser = detect_laser_dot(frame);
+        LaserDotObservation stable_laser = stabilize_laser_observation(&laser_track, raw_laser);
+        cv::Point2f current_laser = stable_laser.detected
+            ? stable_laser.center
+            : cv::Point2f((float)frame.cols * 0.5f, (float)frame.rows * 0.5f);
+
+        cv::Point2f target_point((float)frame.cols * 0.5f, (float)frame.rows * 0.5f);
+        const char *algo_name = "idle";
+        bool laser_enabled = false;
+
+        const bool outputs_allowed = !supervisor.room_empty_confirmed && !deadman_active;
+
+        if (outputs_allowed &&
+            supervisor.state == SUPERVISOR_PLAY &&
+            supervisor.play_mode == PLAY_LOOP_CHASE &&
+            smoothed.has_cat) {
+            target_point = build_cat_play_target(&play_state, smoothed, current_laser,
+                                                 (int)frame_tick, frame.cols, frame.rows,
+                                                 control_dt_sec, &algo_name);
+            laser_enabled = true;
+        } else if (outputs_allowed &&
+                   supervisor.state == SUPERVISOR_PLAY &&
+                   supervisor.play_mode == PLAY_LOOP_BAIT &&
+                   (now_sec - supervisor.cat_last_seen_sec) <= 60.0) {
+            target_point = build_bait_target(&bait_state, &supervisor, frame.cols, frame.rows, control_dt_sec);
+            algo_name = "bait";
+            laser_enabled = true;
+        } else if (outputs_allowed &&
+                   (supervisor.state == SUPERVISOR_WAKE || supervisor.state == SUPERVISOR_DETECT)) {
+            update_random_scan_servo(&servo_state, &random_scan_state, control_dt_sec);
+            algo_name = "wake_scan";
         } else {
             servo_state.pan_deg = 0.0f;
             servo_state.tilt_deg = 0.0f;
-            servo_pwm_set_angle(&pan_pwm, servo_state.pan_deg);
-            servo_pwm_set_angle(&tilt_pwm, servo_state.tilt_deg);
-            mosfet_gpio_set(&laser_gpio, true);
-            fprintf(stderr, "No cat%s; holding center servo=(%.2f,%.2f)\n",
-                    inference_running ? " (inference busy)" : "",
-                    servo_state.pan_deg, servo_state.tilt_deg);
         }
+
+        if (supervisor.state == SUPERVISOR_PLAY && laser_enabled) {
+            update_servo_state(&servo_state, current_laser, target_point, frame.cols, frame.rows);
+        }
+        servo_pwm_set_angle(&pan_pwm, servo_state.pan_deg);
+        servo_pwm_set_angle(&tilt_pwm, servo_state.tilt_deg);
+
+        if (!outputs_allowed || supervisor.state == SUPERVISOR_IDLE ||
+            supervisor.state == SUPERVISOR_SLEEP) {
+            laser_enabled = false;
+        }
+
+        const int laser_on_this_tick = laser_enabled && (laser_pwm_on_ticks > 0) &&
+            (laser_pwm_tick < laser_pwm_on_ticks);
+        mosfet_gpio_set(&laser_gpio, laser_on_this_tick);
+        laser_pwm_tick = (laser_pwm_tick + 1) % laser_pwm_cycle_ticks;
+
+        fprintf(stderr,
+                "state=%s mode=%s cats=%d humans=%d wave=%d target=(%.1f,%.1f) servo=(%.2f,%.2f)%s\n",
+                supervisor_state_name(supervisor.state),
+                algo_name,
+                scene_ptr ? scene_ptr->cat_count : 0,
+                scene_ptr ? scene_ptr->person_count : 0,
+                supervisor.wave_detected,
+                target_point.x, target_point.y,
+                servo_state.pan_deg, servo_state.tilt_deg,
+                inference_running ? " inference_busy" : "");
 
         cv::Mat detection = cv::imread("result.png");
         if (!detection.empty()) cv::imshow("YOLOv5 Live Detection", detection);
