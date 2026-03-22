@@ -6,6 +6,10 @@ static float clampf_local(float value, float min_v, float max_v) {
     return (value < min_v) ? min_v : ((value > max_v) ? max_v : value);
 }
 
+static bool gpio_level_for_enabled_state(const struct MosfetPowerGpio *mosfet_gpio, bool enabled) {
+    return mosfet_gpio->active_low ? !enabled : enabled;
+}
+
 int servo_pwm_open(struct ServoPwm *servo_pwm, unsigned int chip, unsigned int channel) {
     servo_pwm->handle = pwm_new();
     if (servo_pwm->handle == NULL) {
@@ -75,7 +79,7 @@ void servo_pwm_close(struct ServoPwm *servo_pwm) {
     servo_pwm->handle = NULL;
 }
 
-int mosfet_gpio_open(struct MosfetPowerGpio *mosfet_gpio, const char *chip_path, unsigned int line) {
+int mosfet_gpio_open(struct MosfetPowerGpio *mosfet_gpio, const char *chip_path, unsigned int line, bool active_low) {
     mosfet_gpio->handle = gpio_new();
     if (mosfet_gpio->handle == NULL) {
         fprintf(stderr, "gpio_new failed for %s line=%u\n", chip_path, line);
@@ -84,6 +88,7 @@ int mosfet_gpio_open(struct MosfetPowerGpio *mosfet_gpio, const char *chip_path,
 
     mosfet_gpio->chip_path = chip_path;
     mosfet_gpio->line = line;
+    mosfet_gpio->active_low = active_low;
 
     if (gpio_open(mosfet_gpio->handle, chip_path, line, GPIO_DIR_OUT_LOW) < 0) {
         fprintf(stderr, "gpio_open failed for %s line=%u\n", chip_path, line);
@@ -100,7 +105,7 @@ int mosfet_gpio_set(struct MosfetPowerGpio *mosfet_gpio, bool enabled) {
         return -1;
     }
 
-    if (gpio_write(mosfet_gpio->handle, enabled) < 0) {
+    if (gpio_write(mosfet_gpio->handle, gpio_level_for_enabled_state(mosfet_gpio, enabled)) < 0) {
         fprintf(stderr, "gpio_write failed for %s line=%u\n", mosfet_gpio->chip_path, mosfet_gpio->line);
         return -1;
     }
@@ -113,7 +118,7 @@ void mosfet_gpio_close(struct MosfetPowerGpio *mosfet_gpio) {
         return;
     }
 
-    gpio_write(mosfet_gpio->handle, false);
+    gpio_write(mosfet_gpio->handle, gpio_level_for_enabled_state(mosfet_gpio, false));
     gpio_close(mosfet_gpio->handle);
     gpio_free(mosfet_gpio->handle);
     mosfet_gpio->handle = NULL;

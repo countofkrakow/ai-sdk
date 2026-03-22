@@ -225,6 +225,12 @@ static void generate_proposals(int stride, const float* feat, float default_prob
 
 static int detect_yolov5(const cv::Mat& bgr, std::vector<Object>& objects, float **output)
 {
+    if (output == NULL || output[0] == NULL || output[1] == NULL || output[2] == NULL)
+    {
+        fprintf(stderr, "detect_yolov5 received null output buffers\n");
+        return -1;
+    }
+
     //std::chrono::steady_clock::time_point Tbegin, Tend;
 
     //Tbegin = std::chrono::steady_clock::now();
@@ -232,9 +238,9 @@ static int detect_yolov5(const cv::Mat& bgr, std::vector<Object>& objects, float
     int size0 = 1*3*80*80*85;
     int size1 = 1*3*40*40*85;
     int size2 = 1*3*20*20*85;
-    std::vector<float> p8_data(output[0], &output[0][size0-1]);
-    std::vector<float> p16_data(output[1], &output[1][size1-1]);
-    std::vector<float> p32_data(output[2], &output[2][size2-1]);
+    std::vector<float> p8_data(output[0], output[0] + size0);
+    std::vector<float> p16_data(output[1], output[1] + size1);
+    std::vector<float> p32_data(output[2], output[2] + size2);
 
     // set default letterbox size
     int letterbox_rows = 640;
@@ -406,7 +412,10 @@ int yolov5_post_process(const char *imagepath, float **output, Yolov5CatTrackInf
     }
 
     std::vector<Object> objects;
-    detect_yolov5(m, objects, output);
+    if (detect_yolov5(m, objects, output) != 0)
+    {
+        return -1;
+    }
 
     const int cat_class_index = 15;
     for (size_t i = 0; i < objects.size(); ++i)

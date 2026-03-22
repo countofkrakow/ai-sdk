@@ -15,11 +15,17 @@
 
 using namespace std;
 
-void get_input_data(const char* image_file, unsigned char* input_data, int letterbox_rows, int letterbox_cols,
+static int get_input_data(const char* image_file, unsigned char* input_data, int letterbox_rows, int letterbox_cols,
 		const float* mean, const float* scale)
 {
     cv::Mat sample = cv::imread(image_file, 1);
     cv::Mat img;
+
+    if (sample.empty())
+    {
+        fprintf(stderr, "cv::imread %s failed in pre-process\n", image_file);
+        return -1;
+    }
 
     if (sample.channels() == 1)
         cv::cvtColor(sample, img, cv::COLOR_GRAY2RGB);
@@ -73,6 +79,8 @@ void get_input_data(const char* image_file, unsigned char* input_data, int lette
             }
         }
     }
+
+    return 0;
 }
 
 extern "C"{
@@ -93,10 +101,17 @@ unsigned char *yolov5_pre_process(const char* imagepath, unsigned int *file_size
 
     uint8_t *tensorData = NULL;
     tensorData = (uint8_t *)malloc(1 * img_size * sizeof(uint8_t));
+    if (tensorData == NULL)
+    {
+        return NULL;
+    }
 
-    get_input_data(imagepath, tensorData, letterbox_rows, letterbox_cols, mean, scale);
+    if (get_input_data(imagepath, tensorData, letterbox_rows, letterbox_cols, mean, scale) != 0)
+    {
+        free(tensorData);
+        return NULL;
+    }
 
     return tensorData;
 }
 }
-

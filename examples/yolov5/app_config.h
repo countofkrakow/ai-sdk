@@ -8,9 +8,11 @@ struct AppConfig {
     std::string camera_device;
     std::string replay_frames_dir;
     bool dry_run;
+    bool test_mode;
 
     unsigned int laser_brightness_percent;
     unsigned int laser_pwm_cycle_ticks;
+    unsigned int test_frame_limit;
 
     unsigned int pan_pwm_chip;
     unsigned int pan_pwm_channel;

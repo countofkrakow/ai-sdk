@@ -23,11 +23,12 @@ static int parse_brightness_percent(const char *arg, unsigned int *brightness_pe
 
 void app_print_usage(const char *argv0) {
     fprintf(stderr,
-            "Usage: %s <nbg> [camera_device] [laser_brightness_percent] [--dry-run] [--replay <frames_dir>]\n"
+            "Usage: %s <nbg> [camera_device] [laser_brightness_percent] [--dry-run] [--test] [--replay <frames_dir>]\n"
             "  nbg: path to YOLOv5 .nb model\n"
             "  camera_device: optional V4L2 node (default: /dev/video0)\n"
             "  laser_brightness_percent: optional integer 0..100 (default: 100)\n"
             "  --dry-run: run logic without writing servo/GPIO outputs\n"
+            "  --test: run a short dry-run self-test with synthetic frames and no UI\n"
             "  --replay <frames_dir>: replay image sequence instead of live camera\n",
             argv0);
 }
@@ -41,9 +42,11 @@ int app_parse_config(int argc, char **argv, AppConfig *cfg) {
     cfg->camera_device = "/dev/video0";
     cfg->replay_frames_dir.clear();
     cfg->dry_run = false;
+    cfg->test_mode = false;
 
     cfg->laser_brightness_percent = 100;
     cfg->laser_pwm_cycle_ticks = 20;
+    cfg->test_frame_limit = 120;
 
     cfg->pan_pwm_chip = 10;
     cfg->pan_pwm_channel = 1;
@@ -65,6 +68,11 @@ int app_parse_config(int argc, char **argv, AppConfig *cfg) {
     int positional_seen = 0;
     for (int i = 2; i < argc; ++i) {
         if (strcmp(argv[i], "--dry-run") == 0) {
+            cfg->dry_run = true;
+            continue;
+        }
+        if (strcmp(argv[i], "--test") == 0) {
+            cfg->test_mode = true;
             cfg->dry_run = true;
             continue;
         }

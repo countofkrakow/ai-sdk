@@ -88,6 +88,8 @@ int app_runtime_init(const AppConfig *cfg, AppRuntime *rt) {
             return -1;
         }
         debug_trace_log(&rt->trace, DEBUG_LOG_INFO, "INIT", "Replay mode with %zu frames", rt->replay.frame_paths.size());
+    } else if (cfg->test_mode) {
+        debug_trace_log(&rt->trace, DEBUG_LOG_INFO, "INIT", "Test mode enabled: using synthetic frames, dry-run outputs, and no camera");
     } else {
         rt->camera.open(cfg->camera_device, cv::CAP_V4L2);
         if (!rt->camera.isOpened()) {
@@ -104,9 +106,9 @@ int app_runtime_init(const AppConfig *cfg, AppRuntime *rt) {
     }
 
     if (!cfg->dry_run) {
-        if (mosfet_gpio_open(&rt->pan_power_gpio, cfg->mosfet_gpiochip_path, cfg->pan_power_gpio_line) < 0 ||
-            mosfet_gpio_open(&rt->tilt_power_gpio, cfg->mosfet_gpiochip_path, cfg->tilt_power_gpio_line) < 0 ||
-            mosfet_gpio_open(&rt->laser_gpio, cfg->mosfet_gpiochip_path, cfg->laser_gpio_line) < 0) {
+        if (mosfet_gpio_open(&rt->pan_power_gpio, cfg->mosfet_gpiochip_path, cfg->pan_power_gpio_line, false) < 0 ||
+            mosfet_gpio_open(&rt->tilt_power_gpio, cfg->mosfet_gpiochip_path, cfg->tilt_power_gpio_line, false) < 0 ||
+            mosfet_gpio_open(&rt->laser_gpio, cfg->mosfet_gpiochip_path, cfg->laser_gpio_line, false) < 0) {
             return -1;
         }
 
