@@ -209,6 +209,7 @@ static void apply_intensity_motion_style(ServoState *servo_state,
 
 static void *inference_thread_main(void *arg) {
     InferenceThreadArgs *args = (InferenceThreadArgs *)arg;
+    debug_trace_log(args->trace, DEBUG_LOG_INFO, "INFER", "Inference thread started");
 
     while (1) {
         cv::Mat frame;
@@ -229,20 +230,37 @@ static void *inference_thread_main(void *arg) {
         args->frame_mailbox->has_new_frame = 0;
         args->frame_mailbox->inference_running = 1;
         pthread_mutex_unlock(&args->frame_mailbox->mutex);
+        debug_trace_log(args->trace, DEBUG_LOG_INFO, "INFER",
+                        "Picked up frame %lu (%.3fs) size=%dx%d channels=%d",
+                        frame_seq, frame_ts, frame.cols, frame.rows, frame.channels());
 
         Yolov5CatTrackInfo track_info = {0, 0, 0, 0, 0, 0};
         Yolov5CatDetections detections = {0};
 
         if (!frame.empty() && cv::imwrite(args->frame_file, frame)) {
+            debug_trace_log(args->trace, DEBUG_LOG_INFO, "INFER", "Frame %lu written to %s; starting pre-process",
+                            frame_seq, args->frame_file);
             unsigned int file_size = 0;
             unsigned char *input_tensor_bytes = yolov5_pre_process(args->frame_file, &file_size);
             if (input_tensor_bytes != NULL) {
+                debug_trace_log(args->trace, DEBUG_LOG_INFO, "INFER",
+                                "Frame %lu pre-process complete (tensor bytes=%u); calling awnn_set_input_buffers",
+                                frame_seq, file_size);
                 void *input_buffers[] = {input_tensor_bytes};
                 awnn_set_input_buffers(args->context, input_buffers);
+                debug_trace_log(args->trace, DEBUG_LOG_INFO, "INFER", "Frame %lu entering awnn_run", frame_seq);
                 awnn_run(args->context);
+                debug_trace_log(args->trace, DEBUG_LOG_INFO, "INFER", "Frame %lu awnn_run returned", frame_seq);
                 float **results = awnn_get_output_buffers(args->context);
                 if (results != NULL) {
+                    debug_trace_log(args->trace, DEBUG_LOG_INFO, "INFER", "Frame %lu got output buffers; starting post-process", frame_seq);
                     yolov5_post_process(args->frame_file, results, &track_info, &detections);
+                    debug_trace_log(args->trace, DEBUG_LOG_INFO, "INFER",
+                                    "Frame %lu post-process complete (has_cat=%d det_count=%d conf=%.3f)",
+                                    frame_seq,
+                                    track_info.has_cat,
+                                    detections.count,
+                                    track_info.confidence);
                 } else {
                     debug_trace_log(args->trace, DEBUG_LOG_WARN, "INFER", "Inference returned null output buffers");
                 }
@@ -269,6 +287,7 @@ static void *inference_thread_main(void *arg) {
         pthread_mutex_unlock(&args->frame_mailbox->mutex);
     }
 
+    debug_trace_log(args->trace, DEBUG_LOG_INFO, "INFER", "Inference thread stopping");
     return NULL;
 }
 
@@ -388,19 +407,27 @@ int app_run_loop(AppRuntime *rt, volatile sig_atomic_t *stop_flag) {
 
     pthread_t inference_thread;
     if (pthread_create(&inference_thread, NULL, inference_thread_main, &worker_args) != 0) {
+        debug_trace_log(&rt->trace, DEBUG_LOG_ERROR, "LOOP", "Failed to create inference thread");
         return -1;
     }
+    debug_trace_log(&rt->trace, DEBUG_LOG_INFO, "LOOP", "Main loop started");
 
     AutonomousBaitState autonomous = {};
     int had_cat_last_frame = 0;
+    unsigned int consecutive_frame_failures = 0;
 
     while (!(*stop_flag)) {
         if (rt->cfg.test_mode && rt->frame_index >= (int)rt->cfg.test_frame_limit) {
+            debug_trace_log(&rt->trace, DEBUG_LOG_INFO, "LOOP", "Test frame limit reached at frame %d", rt->frame_index);
             break;
         }
 
         FrameInputs in;
         if (read_next_frame(rt, &in) != 0) {
+            consecutive_frame_failures++;
+            debug_trace_log(&rt->trace, DEBUG_LOG_WARN, "LOOP",
+                            "Failed to read next frame (count=%u replay=%d test=%d frame_index=%d)",
+                            consecutive_frame_failures, rt->replay.enabled, rt->cfg.test_mode ? 1 : 0, rt->frame_index);
             if (rt->replay.enabled) {
                 break;
             }
@@ -408,6 +435,10 @@ int app_run_loop(AppRuntime *rt, volatile sig_atomic_t *stop_flag) {
             usleep(100000);
             continue;
         }
+        consecutive_frame_failures = 0;
+        debug_trace_log(&rt->trace, DEBUG_LOG_INFO, "LOOP",
+                        "Frame %d acquired size=%dx%d channels=%d",
+                        rt->frame_index, in.frame_bgr.cols, in.frame_bgr.rows, in.frame_bgr.channels());
 
         if (clear_camera_deadman_if_needed(rt) != 0) {
             usleep(100000);
@@ -416,9 +447,16 @@ int app_run_loop(AppRuntime *rt, volatile sig_atomic_t *stop_flag) {
 
         rt->last_frame_time = time(NULL);
         publish_frame_for_inference(rt, &in);
+        debug_trace_log(&rt->trace, DEBUG_LOG_INFO, "LOOP", "Published frame %lu for inference", in.frame_seq);
 
         PerceptionState perception;
         snapshot_perception(rt, &perception);
+        debug_trace_log(&rt->trace, DEBUG_LOG_INFO, "LOOP",
+                        "Perception snapshot: has_inference=%d inference_running=%d has_cat=%d conf=%.3f",
+                        perception.has_inference,
+                        perception.inference_running,
+                        perception.filtered_track.has_cat,
+                        perception.filtered_track.confidence);
 
         ControlDecision decision = {};
         ActuationCommand cmd = {};
@@ -553,6 +591,7 @@ int app_run_loop(AppRuntime *rt, volatile sig_atomic_t *stop_flag) {
         debug_trace_write_row(&rt->trace, &row);
 
         if (!rt->cfg.test_mode) {
+            debug_trace_log(&rt->trace, DEBUG_LOG_INFO, "LOOP", "Refreshing detection preview window");
             cv::Mat detection = cv::imread("result.png");
             if (!detection.empty()) {
                 cv::imshow("YOLOv5 Live Detection", detection);
@@ -570,5 +609,6 @@ int app_run_loop(AppRuntime *rt, volatile sig_atomic_t *stop_flag) {
     pthread_cond_signal(&rt->frame_mailbox.cond);
     pthread_mutex_unlock(&rt->frame_mailbox.mutex);
     pthread_join(inference_thread, NULL);
+    debug_trace_log(&rt->trace, DEBUG_LOG_INFO, "LOOP", "Main loop exiting cleanly");
     return 0;
 }

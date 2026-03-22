@@ -4,6 +4,11 @@
 
 void app_runtime_shutdown(AppRuntime *rt, int laser_off_on_exit) {
     if (rt == NULL) return;
+    debug_trace_log(&rt->trace, DEBUG_LOG_INFO, "SHUTDOWN",
+                    "Runtime shutdown start: laser_off=%d dry_run=%d context=%p",
+                    laser_off_on_exit,
+                    rt->cfg.dry_run ? 1 : 0,
+                    (void *)rt->context);
 
     if (laser_off_on_exit && !rt->cfg.dry_run) {
         mosfet_gpio_set(&rt->laser_gpio, false);
@@ -13,7 +18,10 @@ void app_runtime_shutdown(AppRuntime *rt, int laser_off_on_exit) {
         awnn_destroy(rt->context);
         rt->context = NULL;
     }
-    awnn_uninit();
+    if (rt->awnn_initialized) {
+        awnn_uninit();
+        rt->awnn_initialized = 0;
+    }
 
     if (!rt->cfg.dry_run) {
         mosfet_gpio_close(&rt->pan_power_gpio);
@@ -30,9 +38,18 @@ void app_runtime_shutdown(AppRuntime *rt, int laser_off_on_exit) {
     play_engine_destroy(rt->play_engine);
     rt->play_engine = NULL;
 
-    pthread_mutex_destroy(&rt->frame_mailbox.mutex);
-    pthread_cond_destroy(&rt->frame_mailbox.cond);
-    pthread_mutex_destroy(&rt->inference_mailbox.mutex);
+    if (rt->frame_mailbox_mutex_initialized) {
+        pthread_mutex_destroy(&rt->frame_mailbox.mutex);
+        rt->frame_mailbox_mutex_initialized = 0;
+    }
+    if (rt->frame_mailbox_cond_initialized) {
+        pthread_cond_destroy(&rt->frame_mailbox.cond);
+        rt->frame_mailbox_cond_initialized = 0;
+    }
+    if (rt->inference_mailbox_mutex_initialized) {
+        pthread_mutex_destroy(&rt->inference_mailbox.mutex);
+        rt->inference_mailbox_mutex_initialized = 0;
+    }
 
     debug_trace_close(&rt->trace);
     cv::destroyAllWindows();

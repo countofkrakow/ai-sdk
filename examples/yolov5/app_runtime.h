@@ -47,6 +47,7 @@ struct AppRuntime {
     AppConfig cfg;
     cv::VideoCapture camera;
     Awnn_Context_t *context;
+    int awnn_initialized;
 
     MosfetPowerGpio pan_power_gpio;
     MosfetPowerGpio tilt_power_gpio;
@@ -72,6 +73,9 @@ struct AppRuntime {
     int servo_rails_powered;
     int deadman_active;
     time_t last_frame_time;
+    int frame_mailbox_mutex_initialized;
+    int frame_mailbox_cond_initialized;
+    int inference_mailbox_mutex_initialized;
 
     DebugTrace trace;
 };

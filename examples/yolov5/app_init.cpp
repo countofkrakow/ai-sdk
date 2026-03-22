@@ -58,6 +58,13 @@ int app_runtime_init(const AppConfig *cfg, AppRuntime *rt) {
 
     srand((unsigned int)time(NULL));
     debug_trace_init(&rt->trace, DEBUG_LOG_INFO, "examples/yolov5/frame_trace.csv");
+    debug_trace_log(&rt->trace, DEBUG_LOG_INFO, "INIT",
+                    "Runtime init start: model=%s camera=%s dry_run=%d test_mode=%d replay=%s",
+                    cfg->nbg_path,
+                    cfg->camera_device.c_str(),
+                    cfg->dry_run ? 1 : 0,
+                    cfg->test_mode ? 1 : 0,
+                    cfg->replay_frames_dir.empty() ? "<none>" : cfg->replay_frames_dir.c_str());
 
     if (load_cat_play_tuning_json(cfg->play_tuning_json_path) == 0) {
         debug_trace_log(&rt->trace, DEBUG_LOG_INFO, "INIT", "Loaded play tuning: %s", cfg->play_tuning_json_path);
@@ -75,8 +82,12 @@ int app_runtime_init(const AppConfig *cfg, AppRuntime *rt) {
     rt->laser_pwm_on_ticks = (cfg->laser_brightness_percent * cfg->laser_pwm_cycle_ticks) / 100;
 
     pthread_mutex_init(&rt->frame_mailbox.mutex, NULL);
+    rt->frame_mailbox_mutex_initialized = 1;
     pthread_cond_init(&rt->frame_mailbox.cond, NULL);
+    rt->frame_mailbox_cond_initialized = 1;
     pthread_mutex_init(&rt->inference_mailbox.mutex, NULL);
+    rt->inference_mailbox_mutex_initialized = 1;
+    debug_trace_log(&rt->trace, DEBUG_LOG_INFO, "INIT", "Frame and inference mailboxes initialized");
 
     rt->context = NULL;
     if (!cfg->replay_frames_dir.empty()) {
@@ -91,30 +102,39 @@ int app_runtime_init(const AppConfig *cfg, AppRuntime *rt) {
     } else if (cfg->test_mode) {
         debug_trace_log(&rt->trace, DEBUG_LOG_INFO, "INIT", "Test mode enabled: using synthetic frames, dry-run outputs, and no camera");
     } else {
+        debug_trace_log(&rt->trace, DEBUG_LOG_INFO, "INIT", "Opening camera: %s", cfg->camera_device.c_str());
         rt->camera.open(cfg->camera_device, cv::CAP_V4L2);
         if (!rt->camera.isOpened()) {
             debug_trace_log(&rt->trace, DEBUG_LOG_ERROR, "INIT", "Failed to open camera: %s", cfg->camera_device.c_str());
             return -1;
         }
+        debug_trace_log(&rt->trace, DEBUG_LOG_INFO, "INIT", "Camera opened successfully");
     }
 
+    debug_trace_log(&rt->trace, DEBUG_LOG_INFO, "INIT", "Initializing AWNN runtime");
     awnn_init();
+    rt->awnn_initialized = 1;
+    debug_trace_log(&rt->trace, DEBUG_LOG_INFO, "INIT", "Creating AWNN context from %s", cfg->nbg_path);
     rt->context = awnn_create(cfg->nbg_path);
     if (rt->context == NULL) {
         debug_trace_log(&rt->trace, DEBUG_LOG_ERROR, "INIT", "Failed to create NPU context: %s", cfg->nbg_path);
         return -1;
     }
+    debug_trace_log(&rt->trace, DEBUG_LOG_INFO, "INIT", "AWNN context created successfully");
 
     if (!cfg->dry_run) {
+        debug_trace_log(&rt->trace, DEBUG_LOG_INFO, "INIT", "Opening MOSFET GPIOs and servo PWM outputs");
         if (mosfet_gpio_open(&rt->pan_power_gpio, cfg->mosfet_gpiochip_path, cfg->pan_power_gpio_line, false) < 0 ||
             mosfet_gpio_open(&rt->tilt_power_gpio, cfg->mosfet_gpiochip_path, cfg->tilt_power_gpio_line, false) < 0 ||
             mosfet_gpio_open(&rt->laser_gpio, cfg->mosfet_gpiochip_path, cfg->laser_gpio_line, false) < 0) {
+            debug_trace_log(&rt->trace, DEBUG_LOG_ERROR, "INIT", "Failed to open one or more MOSFET GPIOs");
             return -1;
         }
 
         if (mosfet_gpio_set(&rt->pan_power_gpio, true) < 0 ||
             mosfet_gpio_set(&rt->tilt_power_gpio, true) < 0 ||
             mosfet_gpio_set(&rt->laser_gpio, true) < 0) {
+            debug_trace_log(&rt->trace, DEBUG_LOG_ERROR, "INIT", "Failed to enable one or more MOSFET GPIO rails");
             return -1;
         }
 
@@ -125,18 +145,22 @@ int app_runtime_init(const AppConfig *cfg, AppRuntime *rt) {
             servo_pwm_enable(&rt->pan_pwm) < 0 ||
             servo_pwm_enable(&rt->tilt_pwm) < 0) {
             print_pwm_sysfs_overview();
+            debug_trace_log(&rt->trace, DEBUG_LOG_ERROR, "INIT", "Failed to initialize servo PWM outputs");
             return -1;
         }
 
         probe_servo_signs_of_life(&rt->pan_pwm, &rt->tilt_pwm, cfg->dry_run);
+        debug_trace_log(&rt->trace, DEBUG_LOG_INFO, "INIT", "Servo outputs initialized and probe completed");
     }
 
     init_multi_cat_tracker_state(&rt->multi_cat_tracker);
     rt->servo_state.pan_deg = 0.0f;
     rt->servo_state.tilt_deg = 0.0f;
     rt->virtual_laser_point = cv::Point2f(0.0f, 0.0f);
+    debug_trace_log(&rt->trace, DEBUG_LOG_INFO, "INIT", "Creating play engine");
     rt->play_engine = play_engine_init();
     if (rt->play_engine == NULL) {
+        debug_trace_log(&rt->trace, DEBUG_LOG_ERROR, "INIT", "Failed to create play engine");
         return -1;
     }
 
@@ -145,5 +169,6 @@ int app_runtime_init(const AppConfig *cfg, AppRuntime *rt) {
     rt->servo_rails_powered = cfg->dry_run ? 0 : 1;
     rt->deadman_active = 0;
     rt->last_frame_time = time(NULL);
+    debug_trace_log(&rt->trace, DEBUG_LOG_INFO, "INIT", "Runtime init complete");
     return 0;
 }
