@@ -51,6 +51,17 @@ Low-cost, always-available detectors that operate in the resident loop:
 
 These detectors should produce events rather than directly control outputs.
 
+### 2a. Camera Watchdog / Deadman Monitor
+
+A first-class watchdog attached to camera ingress that:
+
+- tracks the timestamp of the most recent valid frame,
+- emits `camera_stalled` when no fresh frame arrives within the configured deadline,
+- emits `camera_recovered` once valid frames resume for a short confirmation window,
+- and forces a safe output state while the stream is unhealthy.
+
+This preserves a deadman path for camera-ingress loss so the supervisor never leaves laser, narration, or active play state latched on stale presence.
+
 ### 3. Engagement Estimator
 
 A lightweight logic block that converts recent detections into:
@@ -101,6 +112,8 @@ These should obey supervisor policy and never self-activate outside allowed stat
 Suggested normalized events:
 
 - `frame_tick`
+- `camera_stalled`
+- `camera_recovered`
 - `cat_detected`
 - `cat_lost`
 - `human_detected`
@@ -125,6 +138,33 @@ Each event should carry:
 - detector source,
 - frame window statistics,
 - and the prior state snapshot.
+
+## Camera Deadman Policy
+
+The resident design must treat camera health as a first-class supervisor input.
+
+### Watchdog rules
+
+- Maintain `last_valid_frame_at` in the camera ingress loop.
+- If no valid frame arrives for a deadline such as **2 seconds**, emit `camera_stalled`.
+- Do not clear the stall immediately on a single recovered frame; require a short recovery confirmation window before emitting `camera_recovered`.
+
+### On `camera_stalled`
+
+The supervisor should immediately force a safe state:
+
+- laser off,
+- narration off,
+- any motion outputs or rails off if present,
+- play session paused or torn down,
+- presence state marked stale,
+- and cadence/power reduced until recovery is confirmed.
+
+### On `camera_recovered`
+
+- re-arm resident watch mode,
+- clear stale-presence latches,
+- and require normal wake validation again instead of jumping directly back to full play.
 
 ## Presence Hysteresis and Debounce
 
@@ -205,6 +245,7 @@ Short validation state between idle and active wake.
 
 #### Exit conditions
 - if cat presence persists or wave remains valid -> `WAKE`,
+- if human-only wake is enabled and human presence persists -> `WAKE`,
 - if detections collapse -> return to `IDLE`.
 
 ### State C: `WAKE`
@@ -223,11 +264,14 @@ Bring the system into active readiness.
 - load or prepare active models,
 - create or resume session context,
 - narration on only if room is occupied,
-- laser remains off until cat presence policy passes.
+- laser remains off until cat presence policy passes,
+- start a short wake dwell timer (for example 1–3 seconds).
 
 #### Exit conditions
 - if cat present and ready -> `PLAY`,
 - if no cat but human remains -> `PLAY` in lure mode or a `PLAY_PREP` behavior,
+- if the original wake signal collapses before play criteria are met -> `DISENGAGE_TIMEOUT` or `IDLE`,
+- if wake dwell expires without a stable play-start condition -> rollback to `DISENGAGE_TIMEOUT` or `IDLE`,
 - if occupancy vanishes quickly -> `DISENGAGE_TIMEOUT` or `IDLE`.
 
 ### State D: `PLAY`
@@ -316,6 +360,9 @@ Logical low-power return state. In many implementations this can collapse back i
 - **Repeated no-detection frames -> possibly power down accelerator or lower clocks.**
   - In `DISENGAGE_TIMEOUT` and `SLEEP`, accumulate absence windows and issue power-management requests once sustained emptiness is confirmed.
 
+- **Camera ingress stalls -> force deadman safe state.**
+  - On `camera_stalled`, immediately disable laser and narration, clear stale presence, tear down active play, and transition to `IDLE` or a recovery-safe cooldown path until `camera_recovered` is validated.
+
 ## Laser Policy
 
 The laser controller should be explicit and conservative.
@@ -350,6 +397,7 @@ Narration should be occupancy and state gated.
 
 ### Narration off when
 - room empty is confirmed,
+- camera stall is active,
 - device is in `IDLE` or `SLEEP`,
 - or disengage timeout is entered with no occupant present.
 
@@ -370,6 +418,11 @@ The camera loop should never fully stop while the product is resident.
 ### Ring buffer behavior
 - keep a short rolling buffer for wake validation and quick replay,
 - let the wake path inspect a few frames preceding the trigger so it can avoid blind starts.
+
+### Camera health behavior
+- update `last_valid_frame_at` on every good frame,
+- emit `camera_stalled` if no good frame arrives before the watchdog deadline,
+- and keep the supervisor in a safe non-playing state until `camera_recovered` is confirmed.
 
 ## Session State Machine
 
@@ -458,7 +511,7 @@ on event:
 
   switch supervisor_state:
     IDLE:
-      if cat_present_confirmed or wave_confirmed:
+      if cat_present_confirmed or wave_confirmed or (human_only_wake_enabled and human_present_confirmed):
         transition(DETECT)
 
     DETECT:
@@ -474,6 +527,11 @@ on event:
       elif wake_source == HUMAN_WAVE and human_present_confirmed:
         arm_lure_or_wait_for_cat()
         transition(PLAY)
+      elif human_only_wake_enabled and human_present_confirmed:
+        arm_lure_or_wait_for_cat()
+        transition(PLAY)
+      elif wake_signal_collapsed or wake_dwell_expired:
+        transition(DISENGAGE_TIMEOUT)
       elif room_empty_confirmed:
         transition(DISENGAGE_TIMEOUT)
 
@@ -492,6 +550,12 @@ on event:
 
       if no_cat_and_no_human_for_30_to_60s:
         transition(DISENGAGE_TIMEOUT)
+
+      if camera_stalled:
+        laser_off()
+        narration_off()
+        clear_presence_latches()
+        transition(IDLE)
 
     DISENGAGE_TIMEOUT:
       laser_off()
