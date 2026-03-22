@@ -137,6 +137,22 @@ If you are onboarding to this code, start reading in this order:
 
 If servo init fails at startup (`pwm_open` or `pwm_enable`), the program now logs detected `pwmchip*` devices and each `npwm` value from `/sys/class/pwm`. Use that output to set the correct channel mapping for your board overlay.
 
+### Power path troubleshooting
+
+If servos click but do not move when rails are switched through MOSFET boards, verify power integrity first:
+
+- Ensure a clean shared ground between controller, MOSFET board, and servo supply.
+- Verify rail voltage at the servo connector while moving (not only at PSU output).
+- Confirm wiring and connector resistance are low enough for servo current spikes.
+
+### Servo hardware quick test mode
+
+Use `--test` to run a dedicated smooth circular servo test (3 circles with a 1 second pause between circles) and then exit:
+
+- `./yolov5 <model.nbg> --test`
+- Optional args still work with test mode: `./yolov5 <model.nbg> /dev/video0 100 --test`
+
+This is useful for validating PWM + MOSFET power path behavior without running the full tracking loop.
 
 ### Minimal control flow
 
