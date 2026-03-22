@@ -416,6 +416,9 @@ int app_run_loop(AppRuntime *rt, volatile sig_atomic_t *stop_flag) {
     int had_cat_last_frame = 0;
     unsigned int consecutive_frame_failures = 0;
 
+    AutonomousBaitState autonomous = {};
+    int had_cat_last_frame = 0;
+
     while (!(*stop_flag)) {
         if (rt->cfg.test_mode && rt->frame_index >= (int)rt->cfg.test_frame_limit) {
             debug_trace_log(&rt->trace, DEBUG_LOG_INFO, "LOOP", "Test frame limit reached at frame %d", rt->frame_index);
