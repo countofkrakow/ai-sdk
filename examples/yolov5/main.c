@@ -45,6 +45,7 @@ struct InferenceShared {
     Yolov5CatTrackInfo latest_track;
     int has_scene_info;
     Yolov5SceneDetections latest_scene;
+    double latest_scene_time_sec;
 };
 
 struct InferenceThreadArgs {
@@ -233,6 +234,9 @@ static void set_supervisor_state(struct SupervisorContext *ctx,
             supervisor_state_name(next_state));
     ctx->state = next_state;
     ctx->state_since_sec = now_sec;
+    if (next_state != SUPERVISOR_PLAY) {
+        ctx->play_mode = PLAY_LOOP_NONE;
+    }
     if (next_state == SUPERVISOR_DETECT || next_state == SUPERVISOR_WAKE) {
         ctx->wake_signal_since_sec = now_sec;
     }
@@ -497,6 +501,7 @@ static void *inference_thread_main(void *arg) {
         args->shared->has_cat_info = 1;
         args->shared->latest_scene = scene_info;
         args->shared->has_scene_info = 1;
+        args->shared->latest_scene_time_sec = monotonic_time_sec();
         args->shared->inference_running = 0;
         pthread_mutex_unlock(&args->shared->mutex);
     }
@@ -641,7 +646,7 @@ int main(int argc, char **argv) {
             mosfet_gpiochip_path, laser_gpio_line);
     if (mosfet_gpio_set(&pan_power_gpio, true) < 0 ||
         mosfet_gpio_set(&tilt_power_gpio, true) < 0 ||
-        mosfet_gpio_set(&laser_gpio, true) < 0) {
+        mosfet_gpio_set(&laser_gpio, false) < 0) {
         mosfet_gpio_close(&pan_power_gpio);
         mosfet_gpio_close(&tilt_power_gpio);
         mosfet_gpio_close(&laser_gpio);
@@ -715,6 +720,7 @@ int main(int argc, char **argv) {
     inference_shared.latest_track.has_cat = 0;
     inference_shared.has_scene_info = 0;
     memset(&inference_shared.latest_scene, 0, sizeof(inference_shared.latest_scene));
+    inference_shared.latest_scene_time_sec = 0.0;
 
     struct InferenceThreadArgs worker_args = {context, inference_frame_file, &inference_shared};
     pthread_t inference_thread;
@@ -769,6 +775,19 @@ int main(int argc, char **argv) {
                 mosfet_gpio_set(&laser_gpio, false);
                 servo_rails_powered = 0;
                 deadman_active = 1;
+                pthread_mutex_lock(&inference_shared.mutex);
+                inference_shared.has_cat_info = 0;
+                inference_shared.has_scene_info = 0;
+                inference_shared.latest_track.has_cat = 0;
+                memset(&inference_shared.latest_scene, 0, sizeof(inference_shared.latest_scene));
+                inference_shared.latest_scene_time_sec = 0.0;
+                pthread_mutex_unlock(&inference_shared.mutex);
+                multi_cat_track = (MultiCatTrackState){0};
+                laser_track = (LaserTrackState){0};
+                init_cat_play_state(&play_state);
+                init_bait_state(&bait_state);
+                supervisor.play_mode = PLAY_LOOP_NONE;
+                set_supervisor_state(&supervisor, SUPERVISOR_IDLE, monotonic_time_sec());
                 fprintf(stderr, "Deadman engaged: camera stalled, servo rails powered off.\n");
             }
             usleep(100000);
@@ -833,14 +852,19 @@ int main(int argc, char **argv) {
         Yolov5SceneDetections latest_scene = inference_shared.latest_scene;
         int has_track_info = inference_shared.has_cat_info;
         int has_scene_info = inference_shared.has_scene_info;
+        double latest_scene_time_sec = inference_shared.latest_scene_time_sec;
         int inference_running = inference_shared.inference_running;
         pthread_mutex_unlock(&inference_shared.mutex);
 
-        Yolov5SceneDetections *scene_ptr = has_scene_info ? &latest_scene : NULL;
+        const double scene_fresh_timeout_sec =
+            (supervisor.state == SUPERVISOR_IDLE || supervisor.state == SUPERVISOR_SLEEP) ? 1.0 : 0.5;
+        const int scene_is_fresh = has_scene_info &&
+            ((now_sec - latest_scene_time_sec) <= scene_fresh_timeout_sec);
+        Yolov5SceneDetections *scene_ptr = scene_is_fresh ? &latest_scene : NULL;
         update_wave_state(&wave_state, scene_ptr, now_sec, frame.cols);
 
         Yolov5CatTrackInfo smoothed = select_multi_cat_track(&multi_cat_track, scene_ptr);
-        if (!has_track_info && !has_scene_info) {
+        if (!has_track_info && !scene_is_fresh) {
             smoothed.has_cat = 0;
         }
 
@@ -859,10 +883,12 @@ int main(int argc, char **argv) {
             }
         } else if (supervisor.state == SUPERVISOR_WAKE) {
             if (supervisor.cat_present_confirmed) {
+                init_cat_play_state(&play_state);
                 supervisor.play_mode = PLAY_LOOP_CHASE;
                 set_supervisor_state(&supervisor, SUPERVISOR_PLAY, now_sec);
             } else if ((now_sec - supervisor.cat_last_seen_sec) <= 60.0 &&
                        supervisor.human_present_confirmed) {
+                init_bait_state(&bait_state);
                 supervisor.play_mode = PLAY_LOOP_BAIT;
                 set_supervisor_state(&supervisor, SUPERVISOR_PLAY, now_sec);
             } else if (state_elapsed_sec > 3.0) {
@@ -870,9 +896,15 @@ int main(int argc, char **argv) {
             }
         } else if (supervisor.state == SUPERVISOR_PLAY) {
             if (supervisor.cat_present_confirmed) {
+                if (supervisor.play_mode != PLAY_LOOP_CHASE) {
+                    init_cat_play_state(&play_state);
+                }
                 supervisor.play_mode = PLAY_LOOP_CHASE;
             } else if ((now_sec - supervisor.cat_last_seen_sec) <= 60.0 &&
                        supervisor.human_present_confirmed) {
+                if (supervisor.play_mode != PLAY_LOOP_BAIT) {
+                    init_bait_state(&bait_state);
+                }
                 supervisor.play_mode = PLAY_LOOP_BAIT;
             } else if (!supervisor.cat_present_confirmed && !supervisor.human_present_confirmed &&
                        (now_sec - fmax(supervisor.cat_last_seen_sec, supervisor.human_last_seen_sec)) >= 30.0) {
