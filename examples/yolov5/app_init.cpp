@@ -104,9 +104,9 @@ int app_runtime_init(const AppConfig *cfg, AppRuntime *rt) {
     }
 
     if (!cfg->dry_run) {
-        if (mosfet_gpio_open(&rt->pan_power_gpio, cfg->mosfet_gpiochip_path, cfg->pan_power_gpio_line) < 0 ||
-            mosfet_gpio_open(&rt->tilt_power_gpio, cfg->mosfet_gpiochip_path, cfg->tilt_power_gpio_line) < 0 ||
-            mosfet_gpio_open(&rt->laser_gpio, cfg->mosfet_gpiochip_path, cfg->laser_gpio_line) < 0) {
+        if (mosfet_gpio_open(&rt->pan_power_gpio, cfg->mosfet_gpiochip_path, cfg->pan_power_gpio_line, false) < 0 ||
+            mosfet_gpio_open(&rt->tilt_power_gpio, cfg->mosfet_gpiochip_path, cfg->tilt_power_gpio_line, false) < 0 ||
+            mosfet_gpio_open(&rt->laser_gpio, cfg->mosfet_gpiochip_path, cfg->laser_gpio_line, false) < 0) {
             return -1;
         }
 
