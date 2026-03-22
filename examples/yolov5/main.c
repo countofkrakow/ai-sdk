@@ -339,7 +339,7 @@ static int select_wave_person_index(const struct PersonWaveState *wave_state,
         }
     }
 
-    if (best_iou > 0.08f || best_distance <= distance_gate) {
+    if (best_iou > 0.0f && (best_iou > 0.08f || best_distance <= distance_gate)) {
         if (matched_prior_track != NULL) {
             *matched_prior_track = 1;
         }
@@ -886,6 +886,8 @@ int main(int argc, char **argv) {
                 servo_rails_powered = 0;
                 deadman_active = 1;
                 pthread_mutex_lock(&inference_shared.mutex);
+                inference_shared.latest_frame.release();
+                inference_shared.has_new_frame = 0;
                 inference_shared.has_cat_info = 0;
                 inference_shared.has_scene_info = 0;
                 inference_shared.latest_track.has_cat = 0;
