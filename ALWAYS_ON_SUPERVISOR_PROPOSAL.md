@@ -598,6 +598,23 @@ These are initial tuning targets only.
 7. Session controller with lure mode
 8. Premium narration/LLM integration on top
 
+## Reference Implementation Sketch
+
+A concrete state-machine sketch has been added under `examples/yolov5/`:
+
+- `supervisor_state_machine.h`
+- `supervisor_state_machine.cpp`
+
+That sketch codifies the proposal into:
+
+- explicit supervisor/session/wake/cadence enums,
+- a `SupervisorConfig` with concrete timing and hysteresis parameters,
+- a `SupervisorContext` carrying timestamps, windows, and current policy state,
+- a `DetectionSample` input shape for each resident loop tick,
+- and a `supervisor_step(...)` function that computes transitions and output gating.
+
+The sketch is intended as the handoff point between this proposal and a future integration into the live YOLOv5 example loop.
+
 ## Non-Goals for First Cut
 
 - Full premium narration stack
