@@ -166,3 +166,75 @@ Yolov5CatTrackInfo filter_cat_track(CatTrackFilterState *state, const Yolov5CatT
 
     return state->filtered;
 }
+
+static Yolov5CatTrackInfo tracked_box_to_cat_info(const Yolov5TrackedBox &box) {
+    Yolov5CatTrackInfo out = {1, box.confidence, box.x, box.y, box.width, box.height};
+    return out;
+}
+
+Yolov5CatTrackInfo select_multi_cat_track(MultiCatTrackState *state, const Yolov5SceneDetections *scene) {
+    Yolov5CatTrackInfo out = {0, 0, 0, 0, 0, 0};
+    if (scene == NULL || scene->cat_count <= 0) {
+        if (state->initialized && state->hold_miss_frames < 15) {
+            state->hold_miss_frames++;
+            return state->filtered;
+        }
+        state->initialized = 0;
+        state->hold_miss_frames = 0;
+        state->identity_lock_frames = 0;
+        return out;
+    }
+
+    int best_index = 0;
+    float best_score = -1.0f;
+    const float prev_cx = state->filtered.x + state->filtered.width * 0.5f;
+    const float prev_cy = state->filtered.y + state->filtered.height * 0.5f;
+
+    for (int i = 0; i < scene->cat_count; ++i) {
+        const Yolov5TrackedBox &candidate = scene->cats[i];
+        const float cx = candidate.x + candidate.width * 0.5f;
+        const float cy = candidate.y + candidate.height * 0.5f;
+        const float area = candidate.width * candidate.height;
+        float score = candidate.confidence * 1.8f + sqrtf(fmaxf(area, 1.0f)) * 0.003f;
+
+        if (state->initialized) {
+            const float jump_dist = sqrtf((cx - prev_cx) * (cx - prev_cx) + (cy - prev_cy) * (cy - prev_cy));
+            score += clampf(220.0f - jump_dist, 0.0f, 220.0f) * 0.0035f;
+            if (state->identity_lock_frames > 0 && jump_dist < 160.0f) {
+                score += 0.4f;
+            }
+        }
+
+        if (score > best_score) {
+            best_score = score;
+            best_index = i;
+        }
+    }
+
+    Yolov5CatTrackInfo chosen = tracked_box_to_cat_info(scene->cats[best_index]);
+    state->hold_miss_frames = 0;
+    if (!state->initialized) {
+        state->filtered = chosen;
+        state->initialized = 1;
+        state->identity_lock_frames = 12;
+        return state->filtered;
+    }
+
+    const float chosen_cx = chosen.x + chosen.width * 0.5f;
+    const float chosen_cy = chosen.y + chosen.height * 0.5f;
+    const float prev_dist = sqrtf((chosen_cx - prev_cx) * (chosen_cx - prev_cx) + (chosen_cy - prev_cy) * (chosen_cy - prev_cy));
+    if (state->identity_lock_frames > 0 && prev_dist > 180.0f && chosen.confidence < 0.82f) {
+        state->identity_lock_frames--;
+        return state->filtered;
+    }
+
+    const float alpha = (chosen.confidence > 0.7f) ? 0.38f : 0.24f;
+    state->filtered.has_cat = 1;
+    state->filtered.confidence = alpha * chosen.confidence + (1.0f - alpha) * state->filtered.confidence;
+    state->filtered.x = alpha * chosen.x + (1.0f - alpha) * state->filtered.x;
+    state->filtered.y = alpha * chosen.y + (1.0f - alpha) * state->filtered.y;
+    state->filtered.width = alpha * chosen.width + (1.0f - alpha) * state->filtered.width;
+    state->filtered.height = alpha * chosen.height + (1.0f - alpha) * state->filtered.height;
+    state->identity_lock_frames = 12;
+    return state->filtered;
+}
