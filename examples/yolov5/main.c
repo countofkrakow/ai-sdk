@@ -18,6 +18,7 @@
 #include <errno.h>
 #include <dirent.h>
 #include <signal.h>
+#include <stdint.h>
 
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
@@ -46,6 +47,7 @@ struct InferenceShared {
     int has_scene_info;
     Yolov5SceneDetections latest_scene;
     double latest_scene_time_sec;
+    uint64_t publish_generation;
 };
 
 struct InferenceThreadArgs {
@@ -130,11 +132,13 @@ struct BaitState {
 
 struct PersonWaveState {
     int initialized;
+    int has_tracked_person;
     cv::Point2f last_center;
     int last_direction;
     int direction_flips;
     double last_motion_time_sec;
     double wave_latched_until_sec;
+    Yolov5TrackedBox tracked_person;
 };
 
 struct SupervisorContext {
@@ -160,6 +164,39 @@ struct SupervisorContext {
 
 static const float RANDOM_MIN_SPEED_DEG_PER_SEC = 8.0f;
 static const float RANDOM_MAX_SPEED_DEG_PER_SEC = 30.0f;
+
+static void reset_wave_state(struct PersonWaveState *wave_state) {
+    if (wave_state == NULL) {
+        return;
+    }
+    memset(wave_state, 0, sizeof(*wave_state));
+}
+
+static void init_supervisor_context(struct SupervisorContext *supervisor, double now_sec) {
+    if (supervisor == NULL) {
+        return;
+    }
+    memset(supervisor, 0, sizeof(*supervisor));
+    supervisor->state = SUPERVISOR_IDLE;
+    supervisor->state_since_sec = now_sec;
+    supervisor->play_mode = PLAY_LOOP_NONE;
+    supervisor->cat_last_seen_sec = -1000.0;
+    supervisor->human_last_seen_sec = -1000.0;
+}
+
+static void invalidate_inference_shared_state(struct InferenceShared *shared) {
+    if (shared == NULL) {
+        return;
+    }
+    shared->latest_frame.release();
+    shared->has_new_frame = 0;
+    shared->has_cat_info = 0;
+    shared->has_scene_info = 0;
+    shared->latest_track = (Yolov5CatTrackInfo){0, 0, 0, 0, 0, 0};
+    memset(&shared->latest_scene, 0, sizeof(shared->latest_scene));
+    shared->latest_scene_time_sec = 0.0;
+    shared->publish_generation++;
+}
 
 static float random_float_range(float min_v, float max_v) {
     const float r = (float)rand() / (float)RAND_MAX;
@@ -254,6 +291,112 @@ static cv::Point2f clamp_point_to_frame_local(const cv::Point2f &p, int frame_w,
                        clampf(p.y, 0.0f, (float)frame_h - 1.0f));
 }
 
+static cv::Point2f tracked_box_center(const Yolov5TrackedBox *box) {
+    return cv::Point2f(box->x + box->width * 0.5f,
+                       box->y + box->height * 0.5f);
+}
+
+static float tracked_box_iou(const Yolov5TrackedBox *a, const Yolov5TrackedBox *b) {
+    const float left = fmaxf(a->x, b->x);
+    const float top = fmaxf(a->y, b->y);
+    const float right = fminf(a->x + a->width, b->x + b->width);
+    const float bottom = fminf(a->y + a->height, b->y + b->height);
+    const float intersection_w = fmaxf(0.0f, right - left);
+    const float intersection_h = fmaxf(0.0f, bottom - top);
+    const float intersection_area = intersection_w * intersection_h;
+    const float area_a = fmaxf(0.0f, a->width) * fmaxf(0.0f, a->height);
+    const float area_b = fmaxf(0.0f, b->width) * fmaxf(0.0f, b->height);
+    const float union_area = area_a + area_b - intersection_area;
+    if (union_area <= 1e-5f) {
+        return 0.0f;
+    }
+    return intersection_area / union_area;
+}
+
+static int wave_person_matches_prior_track(const struct PersonWaveState *wave_state,
+                                           const Yolov5TrackedBox *candidate,
+                                           float *distance_out,
+                                           float *iou_out) {
+    if (distance_out != NULL) {
+        *distance_out = 0.0f;
+    }
+    if (iou_out != NULL) {
+        *iou_out = 0.0f;
+    }
+    if (wave_state == NULL || !wave_state->has_tracked_person || candidate == NULL) {
+        return 0;
+    }
+
+    const cv::Point2f previous_center = tracked_box_center(&wave_state->tracked_person);
+    const cv::Point2f candidate_center = tracked_box_center(candidate);
+    const float dx = candidate_center.x - previous_center.x;
+    const float dy = candidate_center.y - previous_center.y;
+    const float distance = sqrtf(dx * dx + dy * dy);
+    const float iou = tracked_box_iou(&wave_state->tracked_person, candidate);
+    const float distance_gate =
+        fmaxf(wave_state->tracked_person.width, wave_state->tracked_person.height) * 0.75f + 90.0f;
+
+    if (distance_out != NULL) {
+        *distance_out = distance;
+    }
+    if (iou_out != NULL) {
+        *iou_out = iou;
+    }
+    if (iou <= 0.0f) {
+        return 0;
+    }
+    return (iou > 0.08f || distance <= distance_gate);
+}
+
+static int select_wave_person_index(const struct PersonWaveState *wave_state,
+                                    const Yolov5SceneDetections *scene,
+                                    int *matched_prior_track) {
+    if (matched_prior_track != NULL) {
+        *matched_prior_track = 0;
+    }
+    if (scene == NULL || scene->person_count <= 0) {
+        return -1;
+    }
+    if (wave_state == NULL || !wave_state->has_tracked_person) {
+        return 0;
+    }
+
+    const float distance_gate =
+        fmaxf(wave_state->tracked_person.width, wave_state->tracked_person.height) * 0.75f + 90.0f;
+
+    int best_index = 0;
+    float best_score = -1.0f;
+    float best_iou = 0.0f;
+    float best_distance = 1e9f;
+    for (int i = 0; i < scene->person_count; ++i) {
+        const Yolov5TrackedBox *candidate = &scene->people[i];
+        float distance = 0.0f;
+        float iou = 0.0f;
+        (void)wave_person_matches_prior_track(wave_state, candidate, &distance, &iou);
+        const float score =
+            candidate->confidence * 1.5f +
+            iou * 3.0f +
+            clampf(distance_gate - distance, 0.0f, distance_gate) * 0.01f;
+        if (score > best_score) {
+            best_score = score;
+            best_index = i;
+            best_iou = iou;
+            best_distance = distance;
+        }
+    }
+
+    if (wave_person_matches_prior_track(
+            wave_state,
+            &scene->people[best_index],
+            &best_distance,
+            &best_iou)) {
+        if (matched_prior_track != NULL) {
+            *matched_prior_track = 1;
+        }
+    }
+    return best_index;
+}
+
 static cv::Point2f build_bait_target(struct BaitState *bait_state,
                                      const struct SupervisorContext *ctx,
                                      int frame_w,
@@ -284,16 +427,33 @@ static void update_wave_state(struct PersonWaveState *wave_state,
                               int frame_w) {
     if (scene == NULL || scene->person_count <= 0) {
         wave_state->initialized = 0;
+        wave_state->has_tracked_person = 0;
         wave_state->last_direction = 0;
         wave_state->direction_flips = 0;
         return;
     }
 
-    const Yolov5TrackedBox *person = &scene->people[0];
-    cv::Point2f center(person->x + person->width * 0.5f, person->y + person->height * 0.5f);
-    if (!wave_state->initialized) {
+    int matched_prior_track = 0;
+    const int person_index = select_wave_person_index(wave_state, scene, &matched_prior_track);
+    if (person_index < 0) {
+        wave_state->initialized = 0;
+        wave_state->has_tracked_person = 0;
+        wave_state->last_direction = 0;
+        wave_state->direction_flips = 0;
+        return;
+    }
+
+    const Yolov5TrackedBox *person = &scene->people[person_index];
+    const cv::Point2f center = tracked_box_center(person);
+    const int need_rebaseline =
+        !wave_state->initialized || !wave_state->has_tracked_person || !matched_prior_track;
+    if (need_rebaseline) {
         wave_state->initialized = 1;
+        wave_state->has_tracked_person = 1;
+        wave_state->tracked_person = *person;
         wave_state->last_center = center;
+        wave_state->last_direction = 0;
+        wave_state->direction_flips = 0;
         wave_state->last_motion_time_sec = now_sec;
         return;
     }
@@ -322,6 +482,7 @@ static void update_wave_state(struct PersonWaveState *wave_state,
         wave_state->direction_flips = 0;
     }
 
+    wave_state->tracked_person = *person;
     wave_state->last_center = center;
 }
 
@@ -477,6 +638,7 @@ static void *inference_thread_main(void *arg) {
         }
 
         frame = args->shared->latest_frame.clone();
+        const uint64_t publish_generation = args->shared->publish_generation;
         args->shared->has_new_frame = 0;
         args->shared->inference_running = 1;
         pthread_mutex_unlock(&args->shared->mutex);
@@ -499,11 +661,13 @@ static void *inference_thread_main(void *arg) {
         }
 
         pthread_mutex_lock(&args->shared->mutex);
-        args->shared->latest_track = track_info;
-        args->shared->has_cat_info = 1;
-        args->shared->latest_scene = scene_info;
-        args->shared->has_scene_info = 1;
-        args->shared->latest_scene_time_sec = monotonic_time_sec();
+        if (publish_generation == args->shared->publish_generation) {
+            args->shared->latest_track = track_info;
+            args->shared->has_cat_info = 1;
+            args->shared->latest_scene = scene_info;
+            args->shared->has_scene_info = 1;
+            args->shared->latest_scene_time_sec = monotonic_time_sec();
+        }
         args->shared->inference_running = 0;
         pthread_mutex_unlock(&args->shared->mutex);
     }
@@ -724,6 +888,7 @@ int main(int argc, char **argv) {
     inference_shared.has_scene_info = 0;
     memset(&inference_shared.latest_scene, 0, sizeof(inference_shared.latest_scene));
     inference_shared.latest_scene_time_sec = 0.0;
+    inference_shared.publish_generation = 1;
 
     struct InferenceThreadArgs worker_args = {context, inference_frame_file, &inference_shared};
     pthread_t inference_thread;
@@ -751,14 +916,9 @@ int main(int argc, char **argv) {
     struct BaitState bait_state;
     init_bait_state(&bait_state);
     struct PersonWaveState wave_state;
-    memset(&wave_state, 0, sizeof(wave_state));
+    reset_wave_state(&wave_state);
     struct SupervisorContext supervisor;
-    memset(&supervisor, 0, sizeof(supervisor));
-    supervisor.state = SUPERVISOR_IDLE;
-    supervisor.state_since_sec = monotonic_time_sec();
-    supervisor.play_mode = PLAY_LOOP_NONE;
-    supervisor.cat_last_seen_sec = -1000.0;
-    supervisor.human_last_seen_sec = -1000.0;
+    init_supervisor_context(&supervisor, monotonic_time_sec());
 
     // Deadman: if camera stream stalls, center servos and cut power.
     time_t last_frame_time = time(NULL);
@@ -779,18 +939,14 @@ int main(int argc, char **argv) {
                 servo_rails_powered = 0;
                 deadman_active = 1;
                 pthread_mutex_lock(&inference_shared.mutex);
-                inference_shared.has_cat_info = 0;
-                inference_shared.has_scene_info = 0;
-                inference_shared.latest_track.has_cat = 0;
-                memset(&inference_shared.latest_scene, 0, sizeof(inference_shared.latest_scene));
-                inference_shared.latest_scene_time_sec = 0.0;
+                invalidate_inference_shared_state(&inference_shared);
                 pthread_mutex_unlock(&inference_shared.mutex);
                 multi_cat_track = (MultiCatTrackState){0};
                 laser_track = (LaserTrackState){0};
                 init_cat_play_state(&play_state);
                 init_bait_state(&bait_state);
-                supervisor.play_mode = PLAY_LOOP_NONE;
-                set_supervisor_state(&supervisor, SUPERVISOR_IDLE, monotonic_time_sec());
+                reset_wave_state(&wave_state);
+                init_supervisor_context(&supervisor, monotonic_time_sec());
                 fprintf(stderr, "Deadman engaged: camera stalled, servo rails powered off.\n");
             }
             usleep(100000);
