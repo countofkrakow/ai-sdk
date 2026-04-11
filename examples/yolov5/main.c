@@ -700,10 +700,11 @@ int main(int argc, char **argv) {
 
     if (argc < 2) {
         fprintf(stderr,
-                "Usage: %s <nbg> [camera_device] [laser_brightness_percent] [--test]\n"
+                "Usage: %s <nbg> [camera_device] [laser_brightness_percent] [--analog] [--test]\n"
                 "  nbg: path to YOLOv5 .nb model\n"
                 "  camera_device: optional V4L2 node (default: /dev/video0)\n"
                 "  laser_brightness_percent: optional integer 0..100 (default: 100)\n"
+                "  --analog: use 50 Hz PWM timing for analog servos (default: 333 Hz for digital servos)\n"
                 "  --test: run a 3-cycle smooth circular servo test and exit\n",
                 argv[0]);
         return -1;
@@ -713,12 +714,17 @@ int main(int argc, char **argv) {
     const char *camera_device = "/dev/video0";
     unsigned int laser_brightness_percent = 100;
     bool servo_test_mode = false;
+    bool analog_servo_mode = false;
 
     int positional_seen = 0;
     for (int i = 2; i < argc; ++i) {
         const char *arg = argv[i];
         if (strcmp(arg, "--test") == 0) {
             servo_test_mode = true;
+            continue;
+        }
+        if (strcmp(arg, "--analog") == 0) {
+            analog_servo_mode = true;
             continue;
         }
 
@@ -753,10 +759,14 @@ int main(int argc, char **argv) {
     unsigned int laser_pwm_tick = 0;
     const unsigned int laser_pwm_on_ticks =
         (laser_brightness_percent * laser_pwm_cycle_ticks) / 100;
+    const unsigned long long servo_pwm_period_ns = analog_servo_mode ? 20000000ULL : 3003003ULL;
+    const unsigned int servo_pwm_frequency_hz = analog_servo_mode ? 50U : 333U;
+    const float servo_max_step_deg = analog_servo_mode ? 1.8f : 1.0f;
 
     fprintf(stderr,
-            "Runtime config: camera=%s laser_brightness=%u%%\n",
-            camera_device, laser_brightness_percent);
+            "Runtime config: camera=%s laser_brightness=%u%% servo_pwm=%uHz (%s) max_step=%.1fdeg\n",
+            camera_device, laser_brightness_percent, servo_pwm_frequency_hz,
+            analog_servo_mode ? "analog" : "digital", servo_max_step_deg);
     const char *inference_frame_file = "live_frame.jpg";
 
     const unsigned int pan_pwm_chip = 10;
@@ -824,8 +834,8 @@ int main(int argc, char **argv) {
 
     struct ServoPwm pan_pwm = {0};
     struct ServoPwm tilt_pwm = {0};
-    if (servo_pwm_open(&pan_pwm, pan_pwm_chip, pan_pwm_channel) < 0 ||
-        servo_pwm_open(&tilt_pwm, tilt_pwm_chip, tilt_pwm_channel) < 0 ||
+    if (servo_pwm_open(&pan_pwm, pan_pwm_chip, pan_pwm_channel, servo_pwm_period_ns) < 0 ||
+        servo_pwm_open(&tilt_pwm, tilt_pwm_chip, tilt_pwm_channel, servo_pwm_period_ns) < 0 ||
         servo_pwm_set_angle(&pan_pwm, 0.0f) < 0 ||
         servo_pwm_set_angle(&tilt_pwm, 0.0f) < 0 ||
         servo_pwm_enable(&pan_pwm) < 0 ||
@@ -1122,7 +1132,7 @@ int main(int argc, char **argv) {
         }
 
         if (supervisor.state == SUPERVISOR_PLAY && laser_enabled) {
-            update_servo_state(&servo_state, current_laser, target_point, frame.cols, frame.rows);
+            update_servo_state(&servo_state, current_laser, target_point, frame.cols, frame.rows, servo_max_step_deg);
         }
         servo_pwm_set_angle(&pan_pwm, servo_state.pan_deg);
         servo_pwm_set_angle(&tilt_pwm, servo_state.tilt_deg);

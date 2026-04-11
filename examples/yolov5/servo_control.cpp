@@ -6,7 +6,7 @@ static float clampf_local(float value, float min_v, float max_v) {
     return (value < min_v) ? min_v : ((value > max_v) ? max_v : value);
 }
 
-int servo_pwm_open(struct ServoPwm *servo_pwm, unsigned int chip, unsigned int channel) {
+int servo_pwm_open(struct ServoPwm *servo_pwm, unsigned int chip, unsigned int channel, unsigned long long period_ns) {
     servo_pwm->handle = pwm_new();
     if (servo_pwm->handle == NULL) {
         fprintf(stderr, "pwm_new failed for chip=%u channel=%u\n", chip, channel);
@@ -23,7 +23,7 @@ int servo_pwm_open(struct ServoPwm *servo_pwm, unsigned int chip, unsigned int c
         return -1;
     }
 
-    if (pwm_set_period_ns(servo_pwm->handle, 20000000ULL) < 0) {
+    if (pwm_set_period_ns(servo_pwm->handle, period_ns) < 0) {
         fprintf(stderr, "pwm_set_period_ns failed for chip=%u channel=%u\n", chip, channel);
         pwm_close(servo_pwm->handle);
         pwm_free(servo_pwm->handle);
@@ -126,10 +126,10 @@ void update_servo_state(
     const cv::Point2f &current_laser,
     const cv::Point2f &target,
     int frame_width,
-    int frame_height) {
+    int frame_height,
+    float max_step_deg) {
     const float pan_gain = 16.0f;
     const float tilt_gain = 16.0f;
-    const float max_step_deg = 1.8f;
 
     float err_x = (target.x - current_laser.x) / (float)frame_width;
     float err_y = (target.y - current_laser.y) / (float)frame_height;
