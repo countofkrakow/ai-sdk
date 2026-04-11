@@ -422,6 +422,8 @@ static void run_servo_test_sequence(struct ServoPwm *pan_pwm,
 
     servo_pwm_set_angle(pan_pwm, 0.0f);
     servo_pwm_set_angle(tilt_pwm, 0.0f);
+    // Let both axes settle at center before PWM is disabled/power rails are cut.
+    usleep(400000);
     fprintf(stderr, "Servo test mode complete.\n");
 }
 
@@ -701,11 +703,12 @@ int main(int argc, char **argv) {
         mosfet_gpio_set(&laser_gpio, false);
         awnn_destroy(context);
         awnn_uninit();
+        // Disable PWM outputs before cutting servo rail power to avoid end-of-run jerks.
+        servo_pwm_close(&pan_pwm);
+        servo_pwm_close(&tilt_pwm);
         mosfet_gpio_close(&pan_power_gpio);
         mosfet_gpio_close(&tilt_power_gpio);
         mosfet_gpio_close(&laser_gpio);
-        servo_pwm_close(&pan_pwm);
-        servo_pwm_close(&tilt_pwm);
         camera.release();
         return 0;
     }
@@ -1012,11 +1015,12 @@ int main(int argc, char **argv) {
 
     awnn_destroy(context);
     awnn_uninit();
+    // Disable PWM outputs before cutting servo rail power to avoid shutdown spikes.
+    servo_pwm_close(&pan_pwm);
+    servo_pwm_close(&tilt_pwm);
     mosfet_gpio_close(&pan_power_gpio);
     mosfet_gpio_close(&tilt_power_gpio);
     mosfet_gpio_close(&laser_gpio);
-    servo_pwm_close(&pan_pwm);
-    servo_pwm_close(&tilt_pwm);
     camera.release();
     cv::destroyAllWindows();
     return 0;
