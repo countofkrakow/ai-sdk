@@ -40,7 +40,7 @@ struct MosfetPowerGpio {
     bool active_low;
 };
 
-int servo_pwm_open(struct ServoPwm *servo_pwm, unsigned int chip, unsigned int channel);
+int servo_pwm_open(struct ServoPwm *servo_pwm, unsigned int chip, unsigned int channel, unsigned long long period_ns);
 int servo_pwm_set_angle(struct ServoPwm *servo_pwm, float angle_deg);
 int servo_pwm_enable(struct ServoPwm *servo_pwm);
 void servo_pwm_close(struct ServoPwm *servo_pwm);
@@ -54,6 +54,7 @@ void update_servo_state(
     const cv::Point2f &current_laser,
     const cv::Point2f &target,
     int frame_width,
-    int frame_height);
+    int frame_height,
+    float max_step_deg);
 
 #endif

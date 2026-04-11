@@ -159,6 +159,8 @@ Use `--test` to run a dedicated smooth circular servo test (3 circles with a 1 s
 
 - `./yolov5 <model.nbg> --test`
 - Optional args still work with test mode: `./yolov5 <model.nbg> /dev/video0 100 --test`
+- Add `--analog` to keep the legacy 50 Hz PWM period for analog servos; digital servos now default to 333 Hz, e.g. `./yolov5 <model.nbg> --analog --test`
+- Digital mode also uses a tighter tracking step limit (1.0°/tick vs 1.8°/tick for analog) to avoid over-travel at the higher refresh rate.
 
 This is useful for validating PWM + MOSFET power path behavior without running the full tracking loop.
 
