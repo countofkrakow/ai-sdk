@@ -619,6 +619,12 @@ static void run_laser_alignment_sequence(struct ServoPwm *pan_pwm,
         servo_pwm_set_angle(tilt_pwm, tilt);
         usleep(35000);
     }
+
+    // Leave the rig in a safe neutral posture with laser OFF.
+    mosfet_gpio_set(laser_gpio, false);
+    servo_pwm_set_angle(pan_pwm, 0.0f);
+    servo_pwm_set_angle(tilt_pwm, 0.0f);
+    usleep(180000);
 }
 
 static void *inference_thread_main(void *arg) {
@@ -871,6 +877,9 @@ int main(int argc, char **argv) {
     usleep(150000);
 
     probe_servo_signs_of_life(&pan_pwm, &tilt_pwm);
+    fprintf(stderr, "Laser alignment check: drawing center crosshair...\n");
+    run_laser_alignment_sequence(&pan_pwm, &tilt_pwm, &laser_gpio);
+    fprintf(stderr, "Laser alignment check complete.\n");
 
     if (servo_test_mode) {
         run_servo_test_sequence(&pan_pwm, &tilt_pwm);
